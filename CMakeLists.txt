@@ -73,7 +73,7 @@ if(BUILD_TESTING)
     add_executable(protocol-tests tests/protocol_tests.cpp)
     target_link_libraries(protocol-tests PRIVATE mo::protocol mo::transport)
     foreach(case wire_layout writer_bounds truncation trailing unknown_values round_trip
-                 framing_split framing_oversized framing_buffer
+                 strong_ids quantization framing_split framing_oversized framing_buffer
                  loopback_delivery loopback_backpressure loopback_corruption)
         add_test(NAME protocol.${case} COMMAND protocol-tests ${case})
         set_tests_properties(protocol.${case} PROPERTIES TIMEOUT 20)

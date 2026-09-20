@@ -1,10 +1,16 @@
+#include "codec.hpp"
 #include "framing.hpp"
+#include "ids.hpp"
 #include "loopback.hpp"
 #include "message.hpp"
+#include "quantize.hpp"
 #include "wire.hpp"
 
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <limits>
+#include <type_traits>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -94,7 +100,7 @@ void reader_rejects_trailing_bytes() {
 void unknown_values_rejected() {
     std::array<std::byte, 8> storage{};
     Writer writer(storage);
-    check(writer.u16(9999) && writer.u16(wire_version), "write unknown id");
+    check(writer.u16(9999), "write unknown id");
     Reader reader(writer.view());
     Header header;
     check(!decode(reader, header), "unknown message id must be refused");
@@ -105,24 +111,44 @@ void unknown_values_rejected() {
     Reader ack_reader(ack_writer.view());
     HandshakeAck ack;
     check(!decode(ack_reader, ack), "unknown handshake status must be refused");
+
+    // 위의 한 값만이 아니라 선언한 집합 밖의 모든 값이 거절되어야 한다.
+    for (int raw = 0; raw < 256; ++raw) {
+        std::array<std::byte, 16> probe{};
+        Writer probe_writer(probe);
+        check(probe_writer.u8(static_cast<std::uint8_t>(raw)) && probe_writer.u16(1) &&
+                  probe_writer.u64(1),
+              "write probe");
+        Reader probe_reader(probe_writer.view());
+        HandshakeAck out;
+        const bool accepted = decode(probe_reader, out);
+        check(accepted == (raw <= 3), "only declared handshake status values may decode");
+    }
+
+    // 선언한 적 없는 값은 전송 경로에도 올라가면 안 된다.
+    std::array<std::byte, 8> out_storage{};
+    Writer out_writer(out_storage);
+    check(!put_enum(out_writer, static_cast<HandshakeStatus>(200)),
+          "an undeclared enum value must not be encoded");
 }
 
 void all_messages_round_trip() {
-    const Header header{MessageId::pong, wire_version};
+    const Header header{MessageId::pong};
     // 버퍼를 변수에 묶는다. Reader가 빌려 쓰므로 임시 객체보다 오래 살면 안 된다.
     const auto header_bytes = encoded(header);
+    check(header_bytes.size() == 2, "the header carries the id only, not a per-packet version");
     Reader header_reader(header_bytes);
     Header header_out;
     check(decode(header_reader, header_out) && header_reader.done(), "header round trip");
-    check(header_out.id == header.id && header_out.version == header.version, "header values");
+    check(header_out.id == header.id, "header values");
 
-    const HandshakeAck ack{HandshakeStatus::version_mismatch, 7, 0x1234567890ABCDEFull};
+    const HandshakeAck ack{HandshakeStatus::version_mismatch, 7, SessionId{0x1234567890ABCDEFull}};
     auto ack_bytes = encoded(ack);
     Reader ack_reader(ack_bytes);
     HandshakeAck ack_out;
     check(decode(ack_reader, ack_out) && ack_reader.done(), "ack round trip");
     check(ack_out.status == ack.status && ack_out.server_version == ack.server_version &&
-              ack_out.session_id == ack.session_id,
+              ack_out.session == ack.session,
           "ack values");
 
     const Pong pong{111, 222};
@@ -131,6 +157,51 @@ void all_messages_round_trip() {
     Pong pong_out;
     check(decode(pong_reader, pong_out) && pong_reader.done(), "pong round trip");
     check(pong_out.echoed_sent_at_us == 111 && pong_out.replied_at_us == 222, "pong values");
+}
+
+// id가 모두 64비트 정수라, 타입을 나눠야 하나를 다른 자리에 넘기는 것을 막는다.
+void strong_ids_survive_round_trip() {
+    static_assert(!std::is_convertible_v<SessionId, EntityId>,
+                  "distinct id types must not convert into each other");
+    static_assert(!std::is_convertible_v<std::uint64_t, SessionId>,
+                  "a raw integer must not become an id implicitly");
+    check(!SessionId{}.valid(), "a zeroed id must not read as a live id");
+    check(SessionId{1}.valid(), "a non-zero id is live");
+
+    const HandshakeAck ack{HandshakeStatus::accepted, wire_version, SessionId{0xFFFFFFFFFFFFFFFFull}};
+    const auto bytes = encoded(ack);
+    Reader reader(bytes);
+    HandshakeAck out;
+    check(decode(reader, out) && reader.done(), "ack with max id decodes");
+    check(out.session == ack.session, "id survives the round trip");
+}
+
+// 연속값은 정수로 전송한다. NaN과 무한대는 비교를 오염시키기 전에 거절한다.
+void quantization_rejects_bad_values() {
+    std::int64_t out = 0;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double inf = std::numeric_limits<double>::infinity();
+    check(!finite(nan) && !finite(inf), "NaN and infinity are not finite");
+    check(!quantize(nan, 1000.0, -1000000, 1000000, out), "NaN must not quantize");
+    check(!quantize(inf, 1000.0, -1000000, 1000000, out), "infinity must not quantize");
+    check(!quantize(1.0, 0.0, -1000, 1000, out), "a non-positive scale is a programming error");
+
+    // 범위를 벗어난 값은 프로토콜 오류이며 잘라 맞출 대상이 아니다. 잘라 맞추면 그
+    // 값이 가리키는 대상을 말없이 옮기게 된다.
+    check(!quantize(5000.0, 1000.0, -1000000, 1000000, out), "out of range must fail");
+    check(quantize(1.2345, 1000.0, -1000000, 1000000, out), "in range succeeds");
+    check(out == 1234 || out == 1235, "value lands on the grid");
+    check(std::abs(dequantize(out, 1000.0) - 1.2345) < 0.001, "round trip within one step");
+
+    // 각도는 순환하므로 16비트 값 전부가 유효한 방향이다.
+    check(quantize_turn(0.0) == 0, "zero degrees");
+    check(quantize_turn(360.0) == 0, "a full turn wraps to zero");
+    check(quantize_turn(-90.0) == quantize_turn(270.0), "negative angles wrap");
+    for (double degrees = 0.0; degrees < 360.0; degrees += 7.5) {
+        const auto raw = quantize_turn(degrees);
+        check(std::abs(dequantize_turn(raw) - degrees) < 0.01, "angle round trip");
+    }
+    check(quantize_turn(nan) == 0, "NaN angle falls back instead of producing garbage");
 }
 
 std::vector<std::byte> payload_of(std::size_t size, std::byte fill) {
@@ -283,6 +354,8 @@ int main(int argc, char** argv) {
         {"trailing", reader_rejects_trailing_bytes},
         {"unknown_values", unknown_values_rejected},
         {"round_trip", all_messages_round_trip},
+        {"strong_ids", strong_ids_survive_round_trip},
+        {"quantization", quantization_rejects_bad_values},
         {"framing_split", framing_reassembles_split_streams},
         {"framing_oversized", framing_rejects_oversized_frames},
         {"framing_buffer", framing_reclaims_buffer},
