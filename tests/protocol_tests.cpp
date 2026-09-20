@@ -202,6 +202,23 @@ void quantization_rejects_bad_values() {
         check(std::abs(dequantize_turn(raw) - degrees) < 0.01, "angle round trip");
     }
     check(quantize_turn(nan) == 0, "NaN angle falls back instead of producing garbage");
+
+    // INT64_MAX는 double로 정확히 표현되지 않아 2^63으로 반올림되므로, double 공간에서
+    // 비교하면 변환할 수 없는 값이 통과했다.
+    constexpr auto int64_max = std::numeric_limits<std::int64_t>::max();
+    constexpr auto int64_min = std::numeric_limits<std::int64_t>::min();
+    check(!quantize(9223372036854775808.0, 1.0, int64_min, int64_max, out),
+          "2^63 is outside int64 and must be refused");
+    // 2^63 부근의 double은 간격이 2048이라, -2^63 바로 아래의 표현 가능한 값은
+    // -2^63 - 2048이다. -2^63 - 1은 다시 -2^63으로 반올림된다.
+    check(!quantize(-9223372036854777856.0, 1.0, int64_min, int64_max, out),
+          "the first representable value below -2^63 must be refused");
+    check(!quantize(1e30, 1.0, int64_min, int64_max, out), "far out of range must be refused");
+    check(quantize(-9223372036854775808.0, 1.0, int64_min, int64_max, out) &&
+              out == int64_min,
+          "the exactly representable lower edge is accepted");
+    check(!quantize(1e300, 1e300, int64_min, int64_max, out),
+          "an overflowing product must be refused");
 }
 
 std::vector<std::byte> payload_of(std::size_t size, std::byte fill) {
@@ -317,31 +334,73 @@ void loopback_applies_backpressure() {
           "oversized payload must be refused by the link");
 }
 
-// 전송 중 바이트 유실은 거절된 프레임으로 드러나야 하며, 잘못된 값으로 디코딩되는
-// 메시지가 되어서는 안 된다.
-void loopback_detects_corrupted_stream() {
+// 프레이밍은 경계를 복원한다. 손상은 탐지하지 못하며 테스트도 그렇게 말해야 한다.
+// 길이 접두사는 프레임이 어디서 끝나는지 알려줄 뿐 내용이 온전한지는 말하지 않는다.
+// 무결성은 보안 계층에서 온다.
+void framing_does_not_provide_integrity() {
     LoopbackConfig config;
     config.max_payload = 128;
+    config.chunk_bytes = 4;
     LoopbackLink link(config);
 
-    check(link.first().send(encoded(Ping{1})) == SendStatus::sent, "send ping");
-    // 길이 접두사에서 한 바이트를 빼 이후의 모든 경계가 밀리게 한다.
-    link.drop_from_first(1);
-    check(link.first().send(encoded(Ping{2})) == SendStatus::sent, "send second ping");
+    const auto first_ping = encoded(Ping{1});
+    check(link.first().send(first_ping) == SendStatus::sent, "send first ping");
+    link.pump();              // 4바이트 길이 접두사만 전달한다.
+    link.drop_from_first(1);  // payload의 첫 바이트를 잃게 한다.
+    const auto second_ping = encoded(Ping{2});
+    check(link.first().send(second_ping) == SendStatus::sent, "send second ping");
     while (link.pump() != 0) {
     }
 
     std::vector<std::vector<std::byte>> received;
     link.second().receive(received, 8);
+
+    bool fabricated = false;
     for (const auto& frame : received) {
         Reader reader(frame);
         Ping out;
-        const bool ok = decode(reader, out) && reader.done();
-        check(!ok || out.sent_at_us == 1 || out.sent_at_us == 2,
-              "a decoded frame must carry a value that was actually sent");
+        if (decode(reader, out) && reader.done() && out.sent_at_us != 1 && out.sent_at_us != 2) {
+            fabricated = true;
+        }
     }
-    check(received.size() < 2 || link.second().faulted(),
-          "a corrupted stream must lose or fault, not fabricate frames");
+    // 문서로 남긴 한계를 단언한다. 나중에 누구도 프레이밍을 무결성으로 착각하지 않게
+    // 하기 위해서다. 사라진 바이트가 이후의 모든 경계를 밀어내고, 다음 프레임의 길이
+    // 접두사가 payload로 읽히며, 보낸 적 없는 값이 정상적으로 디코딩된다.
+    check(fabricated, "framing alone cannot detect a lost payload byte");
+}
+
+// 송신 버퍼 상한만으로는 부족하다. 수신 쪽 상한이 없으면 옮기는 동작이 송신 버퍼를
+// 비워줄 뿐이고, 바이트는 반대편에 계속 쌓여 프로세스가 메모리를 다 쓸 때까지 간다.
+void receive_buffer_is_bounded() {
+    FrameAssembler assembler(16, 64);
+    check(assembler.capacity() == 64, "capacity starts at the configured bound");
+    const std::vector<std::byte> too_much(65, std::byte{1});
+    check(!assembler.push(too_much), "a push beyond capacity must be refused");
+    check(assembler.buffered() == 0, "a refused push must consume nothing");
+
+    LoopbackConfig config;
+    config.max_payload = 16;
+    config.send_buffer_bytes = 64;
+    config.receive_buffer_bytes = 64;
+    LoopbackLink link(config);
+
+    int accepted = 0;
+    for (int i = 0; i < 256; ++i) {
+        if (link.first().send(payload_of(16, std::byte{1})) != SendStatus::sent) {
+            break;
+        }
+        ++accepted;
+        link.pump(); // 상대는 receive()를 부르지 않는다.
+    }
+    check(accepted < 256, "a peer that never reads must eventually stall the sender");
+    check(!link.second().faulted(), "backpressure is not a fault; the link stays usable");
+
+    // 비워주면 다시 흐른다. 이 점이 연결을 끊는 것과 역압을 가르는 차이다.
+    std::vector<std::vector<std::byte>> received;
+    check(link.second().receive(received, 100) > 0, "buffered frames are readable");
+    link.pump();
+    check(link.first().send(payload_of(16, std::byte{1})) == SendStatus::sent,
+          "sending resumes once the reader catches up");
 }
 
 } // 익명 네임스페이스 끝
@@ -361,7 +420,8 @@ int main(int argc, char** argv) {
         {"framing_buffer", framing_reclaims_buffer},
         {"loopback_delivery", loopback_delivers_messages},
         {"loopback_backpressure", loopback_applies_backpressure},
-        {"loopback_corruption", loopback_detects_corrupted_stream}};
+        {"loopback_integrity_limit", framing_does_not_provide_integrity},
+        {"receive_bound", receive_buffer_is_bounded}};
     try {
         check(argc == 2, "provide a test case name");
         for (const auto& [name, test] : cases) {

@@ -74,7 +74,7 @@ if(BUILD_TESTING)
     target_link_libraries(protocol-tests PRIVATE mo::protocol mo::transport)
     foreach(case wire_layout writer_bounds truncation trailing unknown_values round_trip
                  strong_ids quantization framing_split framing_oversized framing_buffer
-                 loopback_delivery loopback_backpressure loopback_corruption)
+                 loopback_delivery loopback_backpressure loopback_integrity_limit receive_bound)
         add_test(NAME protocol.${case} COMMAND protocol-tests ${case})
         set_tests_properties(protocol.${case} PROPERTIES TIMEOUT 20)
     endforeach()

@@ -18,6 +18,10 @@ struct LoopbackConfig {
     std::uint32_t max_payload{64 * 1024};
     // send()가 would_block을 반환하기 전까지 상대에게 가는 도중일 수 있는 바이트 수.
     std::size_t send_buffer_bytes{256 * 1024};
+    // 받는 쪽이 더 받지 않기 전까지 들고 있을 수 있는 바이트 수. 가득 차면 pump()가
+    // 아무것도 옮기지 않고, 송신 버퍼가 차면서 send()가 would_block을 반환한다.
+    // 0이면 조립기의 기본값을 쓴다.
+    std::size_t receive_buffer_bytes{0};
     // pump() 한 번에 방향마다 옮기는 최대 덩어리 크기. 몇 바이트로 낮추면 모든 프레임이
     // 쪼개져 도착하므로 재조립 경로를 확실히 지나간다.
     std::size_t chunk_bytes{0}; // 0이면 수신 여유 안에서 가능한 바이트를 모두 옮긴다.

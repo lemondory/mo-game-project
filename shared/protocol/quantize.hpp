@@ -34,11 +34,20 @@ inline bool quantize(double value, double units_per_unit, std::int64_t min, std:
         return false;
     }
     const double scaled = std::nearbyint(value * units_per_unit);
-    if (!finite(scaled) || scaled < static_cast<double>(min) ||
-        scaled > static_cast<double>(max)) {
+    // static_cast<double>(max)와 비교하면 안전하지 않다. INT64_MAX는 double로 정확히
+    // 표현되지 않아 2^63으로 반올림되므로, 변환할 수 없는 값이 검사를 통과하고 이어지는
+    // 캐스팅이 정의되지 않은 동작이 된다. 먼저 int64로 정확히 표현되는 경계로 자르고,
+    // 호출자가 지정한 범위는 정수 공간에서 비교한다.
+    constexpr double int64_low = -9223372036854775808.0;  // -2^63, 정확히 표현됨
+    constexpr double int64_high = 9223372036854775808.0;  // 2^63, 정확히 표현됨, 배타적
+    if (!finite(scaled) || scaled < int64_low || scaled >= int64_high) {
         return false;
     }
-    out = static_cast<std::int64_t>(scaled);
+    const auto rounded = static_cast<std::int64_t>(scaled);
+    if (rounded < min || rounded > max) {
+        return false;
+    }
+    out = rounded;
     return true;
 }
 

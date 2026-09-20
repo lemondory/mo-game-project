@@ -19,7 +19,7 @@ public:
     class Side final : public Endpoint {
     public:
         Side(Impl& link, bool is_first)
-            : link_(link), is_first_(is_first), assembler_(link.config_.max_payload) {}
+            : link_(link), is_first_(is_first), assembler_(link.config_.max_payload, link.config_.receive_buffer_bytes) {}
 
         SendStatus send(std::span<const std::byte> payload) override {
             if (closed_ || peer().closed_) {
@@ -60,7 +60,14 @@ public:
         bool closed() const override { return closed_; }
         bool faulted() const override { return faulted_ || assembler_.poisoned(); }
 
-        void deliver(std::span<const std::byte> bytes) { assembler_.push(bytes); }
+        std::size_t deliver_capacity() const { return assembler_.capacity(); }
+        // 호출자는 deliver_capacity()보다 많이 넘겨서는 안 되므로, 여기서 거절된다면
+        // 상대의 문제가 아니라 옮기는 쪽의 버그다.
+        void deliver(std::span<const std::byte> bytes) {
+            if (!assembler_.push(bytes)) {
+                faulted_ = true;
+            }
+        }
 
     private:
         Pipe& outbound() { return is_first_ ? link_.first_to_second_ : link_.second_to_first_; }
@@ -95,6 +102,13 @@ private:
         auto take = pipe.in_flight.size();
         if (config_.chunk_bytes != 0) {
             take = std::min(take, config_.chunk_bytes);
+        }
+        // 실제 소켓 읽기 루프는 조립기가 가득 차면 읽기를 멈춘다. 그러면 바이트는
+        // 네트워크에 남고 송신 버퍼가 찬다. 여기서 그냥 옮기면 여유가 없는 쪽이
+        // 수신 측이라는 사실이 가려진다.
+        take = std::min(take, receiver.deliver_capacity());
+        if (take == 0) {
+            return 0;
         }
         const auto dropped = std::min(pipe.drop_next, take);
         pipe.drop_next -= dropped;
