@@ -46,6 +46,9 @@ target_link_libraries(mo_runtime PUBLIC mo::project_options Threads::Threads)
 add_executable(room-runtime-demo server/apps/room-runtime-demo/main.cpp)
 target_link_libraries(room-runtime-demo PRIVATE mo::runtime)
 
+add_executable(room-runtime-bench server/apps/room-runtime-bench/main.cpp)
+target_link_libraries(room-runtime-bench PRIVATE mo::runtime)
+
 include(CTest)
 if(BUILD_TESTING)
     add_executable(room-runtime-tests tests/room_runtime_tests.cpp)
@@ -57,4 +60,12 @@ if(BUILD_TESTING)
     endforeach()
     add_test(NAME runtime.demo COMMAND room-runtime-demo)
     set_tests_properties(runtime.demo PROPERTIES TIMEOUT 10)
+    # 짧은 확인용 실행이다. 하네스 동작과 집계 불변식만 보고 지연은 판정하지 않는다.
+    add_test(NAME runtime.bench_shared COMMAND room-runtime-bench
+             --rooms 6 --workers 2 --duration-ms 400 --tick-hz 50 --input-hz 20
+             --tick-cost-us 200 --command-cost-us 50 --placement shared)
+    add_test(NAME runtime.bench_fixed COMMAND room-runtime-bench
+             --rooms 6 --workers 2 --duration-ms 400 --tick-hz 50 --input-hz 20
+             --tick-cost-us 200 --command-cost-us 50 --hot-rooms 2 --placement fixed)
+    set_tests_properties(runtime.bench_shared runtime.bench_fixed PROPERTIES TIMEOUT 60)
 endif()

@@ -61,11 +61,15 @@ C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 
 
 **[측정 계층](server/runtime/latency_histogram.hpp)** — Room별로 ready 대기, 입력 대기, tick 지연, tick 실행 시간, slice 실행 시간의 분포를 기록합니다. 최댓값 하나만 보면 p99 같은 상위 분위수를 알 수 없기 때문입니다. 실행 중 메모리를 할당하지 않는 고정 크기 히스토그램이며 버킷 오차는 6.25% 이하입니다.
 
+**[측정 하네스](server/apps/room-runtime-bench/main.cpp)** — 서버 응답과 무관하게 정해진 시각에 입력을 보내는 부하 생성기입니다. 응답을 받고 나서 다음 입력을 보내면 서버가 느려질 때 부하도 같이 줄어 과부하가 지표에 드러나지 않습니다. 비싼 Room을 어느 worker에 배치할지 지정해 편향 부하를 재현하고, 정상 Room과 과부하 Room을 나눠서 보고합니다.
+
+**실행 모델 비교 스위치** — 공유 큐(채택 모델)와 스레드 고정 배치(비교 기준)를 같은 실행 계약 위에서 대조합니다.
+
 `room-runtime-demo`는 합성 명령과 tick을 처리하는 프로세스 내부 실행 예제입니다.
 
 ### 검증
 
-macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 13개 통과**, 컴파일 경고 없음. ThreadSanitizer는 각 케이스를 10회 반복해 총 130회에서 데이터 레이스 진단이 없었습니다. Windows/Linux는 CI 실행 대기입니다.
+macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 15개 통과**, 컴파일 경고 없음. ThreadSanitizer는 각 케이스를 10회 반복해 총 150회에서 데이터 레이스 진단이 없었습니다. Windows/Linux는 CI 실행 대기입니다.
 
 검증 대상은 실제로 실패할 수 있는 경계입니다.
 
@@ -81,6 +85,20 @@ macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 13개 통과**, �
 | tick | 고정 dt와 연속된 tick 번호를 유지하면서 밀린 tick의 보충을 제한하는가 |
 | 예외 격리 | 한 Room의 예외가 다른 Room의 실행에 번지지 않는가 |
 | 측정 계약 | 히스토그램 버킷 경계와 분위수가 정확한가, 표본 수가 실행 횟수와 일치하는가 |
+| 하네스 회계 | Room 여러 개를 동시에 돌린 뒤 수락·처리·폐기 수의 합이 맞는가 |
+
+### 측정 결과: 실행 모델 비교
+
+Room 64개 / worker 4개 / 60 Hz / 12초. 비싼 Room 4개(8배 비용)를 고정 배치 모델의 한 worker로 몰았을 때, **영향을 받지 않아야 할 정상 Room**의 tick 지연입니다.
+
+| 실행 모델 | p50 | p90 | p99 | 입력 처리 지연 p99 | 기한 초과 Room |
+| --- | --- | --- | --- | --- | --- |
+| 공유 worker 풀 | 0.035 ms | 1.2 ms | 1.5 ms | 1.7 ms | 0 |
+| 스레드 고정 배치 | 0.043 ms | 1245 ms | 3932 ms | 23.6 ms | 16 |
+
+균일 부하에서는 두 모델이 사실상 같았습니다(tick 지연 p99 0.083 ms 대 0.119 ms). 공유 풀은 균일 부하에서 손해 없이 편향 부하에서만 이득이었습니다. 다만 한 worker의 수요가 1코어를 넘으면 스케줄링으로 해결되지 않고, 전체가 포화하면 공유 풀도 같은 결과가 됩니다.
+
+> 합성 비용 모델, 개발 머신(macOS, Apple silicon 14코어), 단일 실행 기준입니다. 전투·직렬화 비용과 네트워크 구간이 빠져 있어 서비스 수용량 수치가 아닙니다.
 
 ## 프로젝트 구조
 
@@ -91,7 +109,9 @@ mo-game-project/
   cmake/                    # 공통 빌드·toolchain 확인
   server/
     runtime/                # Room 실행기, 명령 큐, 지연 히스토그램
-    apps/room-runtime-demo/ # 프로세스 내부 실행 예제
+    apps/
+      room-runtime-demo/    # 프로세스 내부 실행 예제
+      room-runtime-bench/   # 부하·지연 측정 하네스
   tests/                    # 동시성·수명·측정 계약 검증
 ```
 
@@ -136,6 +156,35 @@ ctest --preset macos-debug
 | `macos-tsan` | ThreadSanitizer | 두 스레드가 동기화 없이 같은 메모리에 접근하는 데이터 레이스 |
 
 멀티스레드 코드의 데이터 레이스는 일반 테스트에서 우연히 통과하는 경우가 많습니다. ThreadSanitizer는 충돌이 실제로 발생하지 않아도 동기화가 빠진 접근 자체를 찾아내므로, Room 실행기를 만드는 동안 상시로 돌립니다.
+
+실행 모델의 지연 분포를 비교하려면 Release 빌드의 측정 하네스를 사용합니다.
+
+```sh
+cmake --build --preset macos-release
+./out/build/macos-release/room-runtime-bench --help
+
+# 편향 부하: 비싼 Room을 고정 배치 모델의 한 worker로 집중
+./out/build/macos-release/room-runtime-bench \
+  --rooms 64 --workers 4 --duration-ms 12000 \
+  --tick-hz 60 --input-hz 30 --tick-cost-us 500 --command-cost-us 100 \
+  --hot-rooms 4 --hot-multiplier 8 --hot-layout collide \
+  --placement shared --json report.json
+```
+
+`--placement`를 `shared`와 `fixed`로 바꿔 실행하면 위 비교 결과를 재현할 수 있습니다.
+
+## 진행 계획
+
+| 단계 | 내용 | 상태 |
+| --- | --- | --- |
+| P0 | 기술 위험 확인: transport 후보 실험, Unreal 연동 가능성, 플랫폼 빌드 | 진행 예정 |
+| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정 완료 |
+| P2 | UI 없이 끝까지 플레이: 파티·입장·전투·보상 영속화를 콘솔로 완주 | 미착수 |
+| P3 | 부하와 장애를 포함한 수평 확장: Directory·lease·배치·drain·노드 장애 | 미착수 |
+| P4 | Unreal 샘플 완성: 예측·보정·재접속 UX와 클라이언트 지표 | 미착수 |
+| P5 | 서비스 준비: fuzz·soak·인증·배포·복구 runbook과 출시 게이트 | 미착수 |
+
+다음 작업은 최소 플레이 범위 확정과 프로토콜·세션 설계, transport 후보의 작은 실험입니다.
 
 ## 아직 확정하지 않은 것
 
