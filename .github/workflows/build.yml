@@ -1,0 +1,45 @@
+name: Runtime build and tests
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            configure: macos-debug
+            build: macos-debug
+          - os: macos-14
+            configure: macos-release
+            build: macos-release
+          - os: windows-2022
+            configure: windows-msvc
+            build: windows-debug
+          - os: windows-2022
+            configure: windows-msvc
+            build: windows-release
+          - os: ubuntu-24.04
+            configure: linux-debug
+            build: linux-debug
+          - os: ubuntu-24.04
+            configure: linux-release
+            build: linux-release
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake --preset ${{ matrix.configure }}
+      - run: cmake --build --preset ${{ matrix.build }} --parallel 2
+      - run: ctest --preset ${{ matrix.build }}
+
+  sanitizer:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, thread]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake --preset linux-debug -B out/build/sanitizer -DMO_SANITIZER=${{ matrix.sanitizer }}
+      - run: cmake --build out/build/sanitizer --parallel 2
+      - run: ctest --test-dir out/build/sanitizer --output-on-failure

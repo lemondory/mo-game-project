@@ -45,3 +45,16 @@ target_link_libraries(mo_runtime PUBLIC mo::project_options Threads::Threads)
 
 add_executable(room-runtime-demo server/apps/room-runtime-demo/main.cpp)
 target_link_libraries(room-runtime-demo PRIVATE mo::runtime)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(room-runtime-tests tests/room_runtime_tests.cpp)
+    target_link_libraries(room-runtime-tests PRIVATE mo::runtime)
+    foreach(case producers wakeup parallel fairness lifecycle shutdown ticks tick_close exceptions
+                 histogram latencies placement)
+        add_test(NAME runtime.${case} COMMAND room-runtime-tests ${case})
+        set_tests_properties(runtime.${case} PROPERTIES TIMEOUT 20)
+    endforeach()
+    add_test(NAME runtime.demo COMMAND room-runtime-demo)
+    set_tests_properties(runtime.demo PROPERTIES TIMEOUT 10)
+endif()

@@ -63,6 +63,25 @@ C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 
 
 `room-runtime-demo`는 합성 명령과 tick을 처리하는 프로세스 내부 실행 예제입니다.
 
+### 검증
+
+macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 13개 통과**, 컴파일 경고 없음. ThreadSanitizer는 각 케이스를 10회 반복해 총 130회에서 데이터 레이스 진단이 없었습니다. Windows/Linux는 CI 실행 대기입니다.
+
+검증 대상은 실제로 실패할 수 있는 경계입니다.
+
+| 검증 | 확인하는 것 |
+| --- | --- |
+| 다중 producer | 스레드 6개가 명령 12,000개를 보낼 때 수락 수와 적용 수, ID 집합이 일치하는가 |
+| 단일 실행권 | 같은 Room의 명령과 tick이 겹쳐 실행되는 순간이 한 번도 없는가 |
+| 병렬 진행 | 서로 다른 Room은 동시에 실행되는가 |
+| 실행 순서 | 명령이 몰린 Room이 다른 Room의 차례를 독점하지 않는가 |
+| wakeup 유실 | 실행이 끝나는 순간 도착한 명령이 아무도 깨우지 않은 채 큐에 남지 않는가 |
+| 수명 | 큐가 가득 찬 상태로 종료할 때 폐기 수가 맞는가, slot 재사용 후 이전 handle이 거절되는가 |
+| 종료 경쟁 | 여러 스레드가 동시에 종료를 호출해도 집계가 어긋나지 않는가 |
+| tick | 고정 dt와 연속된 tick 번호를 유지하면서 밀린 tick의 보충을 제한하는가 |
+| 예외 격리 | 한 Room의 예외가 다른 Room의 실행에 번지지 않는가 |
+| 측정 계약 | 히스토그램 버킷 경계와 분위수가 정확한가, 표본 수가 실행 횟수와 일치하는가 |
+
 ## 프로젝트 구조
 
 ```text
@@ -73,6 +92,7 @@ mo-game-project/
   server/
     runtime/                # Room 실행기, 명령 큐, 지연 히스토그램
     apps/room-runtime-demo/ # 프로세스 내부 실행 예제
+  tests/                    # 동시성·수명·측정 계약 검증
 ```
 
 예정 구조입니다.
@@ -90,7 +110,7 @@ mo-game-project/
     simulation/             # 엔진 독립 전투·목표
   clients/unreal/           # Unreal 샘플 클라이언트
   tools/load-client/        # 실제 프로토콜 부하 발생기
-  tests/ data/ schemas/
+  data/ schemas/            # 버전 관리되는 던전·스킬·충돌 데이터
 ```
 
 `simulation`은 transport·DB·Unreal 헤더에 의존하지 않습니다. 네트워크 DTO와 시뮬레이션 명령은 경계에서 변환합니다. 서버는 CMake, Unreal은 Unreal Build Tool을 사용하며 모노레포 안에서 독립 빌드가 가능해야 합니다.
@@ -102,6 +122,8 @@ macOS에서 C++20을 지원하는 Apple Clang과 CMake 3.25 이상을 설치한 
 ```sh
 cmake --preset macos-debug
 cmake --build --preset macos-debug
+ctest --preset macos-debug
+./out/build/macos-debug/room-runtime-demo
 ```
 
 `cmake/CheckToolchain.cmake`가 구성 단계에서 C++20 컴파일과 링크를 확인합니다. Windows는 `windows-msvc` 구성에 `windows-debug`/`windows-release` 빌드, Linux는 `linux-debug`/`linux-release`를 사용합니다.
