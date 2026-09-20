@@ -67,9 +67,18 @@ C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 
 
 `room-runtime-demo`는 합성 명령과 tick을 처리하는 프로세스 내부 실행 예제입니다.
 
+**[프로토콜](shared/protocol/)과 [transport](shared/transport/)** — 서로 의존하지 않는 두 라이브러리로 나눴습니다. 프로토콜은 메시지를 바이트로 바꾸는 일만 하고 소켓을 모릅니다. transport는 연결과 프레임 경계만 다루고 메시지 의미를 모릅니다. 그래서 전송 라이브러리를 바꿔도 메시지 정의는 그대로고, 부하 봇은 이 둘만 링크해 서버 코드 없이 붙습니다.
+
+- **경계 검사:** 모든 읽기가 남은 길이를 확인합니다. 잘린 프레임은 첫 번째 짧은 필드에서 실패하고, 남은 바이트가 있는 프레임도 거절합니다. 보낸 쪽과 받는 쪽이 메시지를 다르게 알고 있다는 뜻이기 때문입니다.
+- **고정 리틀엔디안:** 구조체를 그대로 복사하지 않습니다. 패딩과 호스트 바이트 순서가 전송 형식에 새어 들어가면 다른 기기에서 다르게 읽힙니다.
+- **프레이밍:** TCP는 바이트만 전달하므로 한 번 읽기에 프레임 절반이 오거나 세 개 반이 옵니다. 길이 접두사로 경계를 복원하고, 한도를 넘는 길이를 선언하면 다음 경계를 알 수 없으므로 연결을 끊습니다.
+- **loopback transport:** 소켓과 스레드 없이 메모리로 주고받는 구현입니다. 테스트가 바이트를 언제 몇 개씩 옮길지 직접 정하므로 재조립 버그가 100번에 한 번이 아니라 매번 드러납니다. 나중에 문제가 생겼을 때 프로토콜 버그인지 소켓 버그인지 가르는 기준이기도 합니다.
+
+이동·전투·snapshot 메시지는 아직 없습니다. 모양이 파티 인원과 전투 범위에 달려 있어서, 정해지기 전에 올리면 추측 위에 전송 형식을 고정하게 됩니다.
+
 ### 검증
 
-macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 15개 통과**, 컴파일 경고 없음. ThreadSanitizer는 각 케이스를 10회 반복해 총 150회에서 데이터 레이스 진단이 없었습니다. Windows/Linux는 CI 실행 대기입니다.
+macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 27개 통과**, 컴파일 경고 없음. ThreadSanitizer는 각 케이스를 10회 반복해 총 270회에서 데이터 레이스 진단이 없었습니다. Windows/Linux는 CI 실행 대기입니다.
 
 검증 대상은 실제로 실패할 수 있는 경계입니다.
 
@@ -86,6 +95,13 @@ macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 15개 통과**, �
 | 예외 격리 | 한 Room의 예외가 다른 Room의 실행에 번지지 않는가 |
 | 측정 계약 | 히스토그램 버킷 경계와 분위수가 정확한가, 표본 수가 실행 횟수와 일치하는가 |
 | 하네스 회계 | Room 여러 개를 동시에 돌린 뒤 수락·처리·폐기 수의 합이 맞는가 |
+| 전송 형식 | 다른 기기에서도 같은 바이트로 읽히는가 (고정 리틀엔디안) |
+| 잘린 입력 | 메시지를 어느 길이에서 잘라도 거절하는가 |
+| 알 수 없는 값 | 모르는 메시지 id와 상태 값을 추측하지 않고 거절하는가 |
+| 프레임 재조립 | 바이트를 한 개씩 흘려보내도 보낸 프레임이 그대로 복원되는가 |
+| 과대 프레임 | 한도를 넘는 길이 선언에 버퍼를 키우지 않고 연결을 끊는가 |
+| 역압 | 읽지 않는 상대 때문에 송신 버퍼가 무한히 자라지 않는가 |
+| 손상된 스트림 | 바이트가 유실됐을 때 잘못된 값을 만들어내지 않고 실패하는가 |
 
 ### 측정 결과: 실행 모델 비교
 
@@ -107,6 +123,9 @@ mo-game-project/
   CMakeLists.txt
   CMakePresets.json         # macOS/Windows/Linux 구성과 sanitizer 프리셋
   cmake/                    # 공통 빌드·toolchain 확인
+  shared/
+    protocol/               # 메시지 정의와 바이트 변환 (소켓 의존 없음)
+    transport/              # 프레이밍·연결·loopback (메시지 의미 모름)
   server/
     runtime/                # Room 실행기, 명령 큐, 지연 히스토그램
     apps/
@@ -125,15 +144,14 @@ mo-game-project/
     persistence/            # transaction, 원장, outbox
   shared/
     core/                   # ID, clock, 공통 오류
-    protocol/               # 메시지 schema, codec, 버전
-    transport/              # transport adapter, session
+    transport/asio/         # 실제 소켓 구현
     simulation/             # 엔진 독립 전투·목표
   clients/unreal/           # Unreal 샘플 클라이언트
   tools/load-client/        # 실제 프로토콜 부하 발생기
   data/ schemas/            # 버전 관리되는 던전·스킬·충돌 데이터
 ```
 
-`simulation`은 transport·DB·Unreal 헤더에 의존하지 않습니다. 네트워크 DTO와 시뮬레이션 명령은 경계에서 변환합니다. 서버는 CMake, Unreal은 Unreal Build Tool을 사용하며 모노레포 안에서 독립 빌드가 가능해야 합니다.
+의존 방향을 빌드에서 강제합니다. `mo_protocol`과 `mo_transport`는 서로에게도, Room 실행기에도 의존하지 않습니다. 조립은 서버 앱과 봇이 합니다. `simulation`은 transport·DB·Unreal 헤더에 의존하지 않습니다. 네트워크 DTO와 시뮬레이션 명령은 경계에서 변환합니다. 서버는 CMake, Unreal은 Unreal Build Tool을 사용하며 모노레포 안에서 독립 빌드가 가능해야 합니다.
 
 ## 빌드
 

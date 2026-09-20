@@ -46,6 +46,18 @@ target_link_libraries(mo_runtime PUBLIC mo::project_options Threads::Threads)
 add_executable(room-runtime-demo server/apps/room-runtime-demo/main.cpp)
 target_link_libraries(room-runtime-demo PRIVATE mo::runtime)
 
+# 네트워크 계층은 runtime과도, 서로와도 독립이다. 프로토콜은 소켓을 모르고
+# transport는 메시지의 의미를 모른다.
+add_library(mo_protocol shared/protocol/message.cpp)
+add_library(mo::protocol ALIAS mo_protocol)
+target_include_directories(mo_protocol PUBLIC shared/protocol)
+target_link_libraries(mo_protocol PUBLIC mo::project_options)
+
+add_library(mo_transport shared/transport/framing.cpp shared/transport/loopback.cpp)
+add_library(mo::transport ALIAS mo_transport)
+target_include_directories(mo_transport PUBLIC shared/transport)
+target_link_libraries(mo_transport PUBLIC mo::project_options)
+
 add_executable(room-runtime-bench server/apps/room-runtime-bench/main.cpp)
 target_link_libraries(room-runtime-bench PRIVATE mo::runtime)
 
@@ -58,6 +70,15 @@ if(BUILD_TESTING)
         add_test(NAME runtime.${case} COMMAND room-runtime-tests ${case})
         set_tests_properties(runtime.${case} PROPERTIES TIMEOUT 20)
     endforeach()
+    add_executable(protocol-tests tests/protocol_tests.cpp)
+    target_link_libraries(protocol-tests PRIVATE mo::protocol mo::transport)
+    foreach(case wire_layout writer_bounds truncation trailing unknown_values round_trip
+                 framing_split framing_oversized framing_buffer
+                 loopback_delivery loopback_backpressure loopback_corruption)
+        add_test(NAME protocol.${case} COMMAND protocol-tests ${case})
+        set_tests_properties(protocol.${case} PROPERTIES TIMEOUT 20)
+    endforeach()
+
     add_test(NAME runtime.demo COMMAND room-runtime-demo)
     set_tests_properties(runtime.demo PROPERTIES TIMEOUT 10)
     # 짧은 확인용 실행이다. 하네스 동작과 집계 불변식만 보고 지연은 판정하지 않는다.
