@@ -1,0 +1,17 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": false,
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "[markdown]": {
+    "files.trimTrailingWhitespace": false
+  },
+  "files.watcherExclude": {
+    "**/out/**": true,
+    "**/vcpkg_installed/**": true,
+    "**/Intermediate/**": true,
+    "**/DerivedDataCache/**": true
+  }
+}
