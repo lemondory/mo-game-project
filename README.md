@@ -4,6 +4,17 @@
 
 엔진 독립 서버의 상태 소유권과 동시 실행 구조를 직접 설계하고, 부하·응답성·정합성을 측정으로 검증합니다.
 
+## 지금 개발하는 부분
+
+현재는 **게임 입력을 받기 전에 연결이 지켜야 할 절차를 처리하는 서버 세션**까지 구현했습니다. 게임 실행 단위인 Room과 연결 관리 단위인 Session은 별개입니다.
+
+```text
+바이트 수신 → 프레임 복원 → 메시지 해석 → 세션 상태 확인 → 게임 명령 변환 → Room 실행
+  다음 B       구현됨        구현됨        이번 A 완료       이후 연동       기반 구현됨
+```
+
+지금은 실제 소켓 대신 메모리 loopback을 사용해 `Handshake → 승인 ACK → Ping/Pong → 종료`를 검증합니다. 다음에는 같은 세션을 실제 소켓에 연결하고, 그 뒤 작은 이동·공격 명령을 Room에 전달합니다. 계정 인증과 전투 판정은 아직 구현하지 않았습니다.
+
 ## 프로젝트 목표
 
 > 마을 → 파티 구성 → 던전 입장 → 전투·목표 수행 → 보상 → 마을 복귀
@@ -81,11 +92,20 @@ C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 
 
 버전은 연결 시 handshake에서 한 번만 협상합니다. 패킷마다 버전을 실으면 한 연결 안에서 바뀌지도 않는 값에 대역폭을 계속 쓰게 됩니다.
 
+**[서버 세션](server/session/session.cpp)** — 연결마다 버전·build를 확인하고 허용되는 메시지와 종료 시점을 결정합니다. 현재는 정확한 버전/build 일치만 허용하며, 연결 협상 성공은 계정 인증 성공을 뜻하지 않습니다.
+
+- Header+body 전체 패킷을 읽어 잘린 필드·모르는 ID·잔여 바이트를 거절합니다.
+- 승인 ACK가 송신 경로에 수락된 후 Active가 됩니다. 송신 공간이 없으면 응답 한 개만 보관하고 입력 처리를 멈춥니다. 송신 수락과 원격 수신은 구분합니다.
+- handshake·idle·송신 정체·거절 종료의 기한을 검사하며, 이전 연결·작업의 늦은 이벤트를 토큰으로 무효화합니다.
+- core는 프로토콜에만 의존합니다. driver가 시간·frame·송신 결과·종료 이벤트를 직렬로 전달하고, 소켓과 Room을 조립하는 책임은 별도로 둡니다.
+
+`session-demo`는 이 흐름을 출력하는 실행 예제입니다. 전투 입력의 시퀀스와 소켓 callback 수명 검증은 이후 단계입니다.
+
 이동·전투·snapshot 메시지와 양자화 스케일은 아직 없습니다. 모양과 단위가 파티 인원·전투 공간에 달려 있는데, 이건 클라이언트 배포 후 바꿀 수 없는 영역이라 정해진 뒤에 올립니다.
 
 ### 검증
 
-macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 30개 통과**, 컴파일 경고 없음. ThreadSanitizer는 각 케이스를 10회 반복해 총 300회에서 데이터 레이스 진단이 없었습니다. Windows/Linux는 CI 실행 대기입니다.
+현재 세션 추가본은 macOS Debug 및 ASan+UBSan에서 각각 **CTest 39개 통과**, 컴파일 경고와 sanitizer 진단 없음. 이전 30개 검사 구성의 Release/TSan 반복 결과와 구분하며, 이번 세션 추가본의 Release/TSan 및 Windows/Linux 실행 검증은 남아 있습니다.
 
 검증 대상은 실제로 실패할 수 있는 경계입니다.
 
@@ -95,6 +115,9 @@ macOS Debug/Release 및 sanitizer 구성에서 각각 **CTest 30개 통과**, �
 | 단일 실행권 | 같은 Room의 명령과 tick이 겹쳐 실행되는 순간이 한 번도 없는가 |
 | 병렬 진행 | 서로 다른 Room은 동시에 실행되는가 |
 | 실행 순서 | 명령이 몰린 Room이 다른 Room의 차례를 독점하지 않는가 |
+| 세션 협상 | handshake 전에 Ping을 거절하고, 버전/build가 맞아야 승인하는가 |
+| 응답 정체·종료 | ACK를 중복 생성하지 않고 보류하며, drain 기한과 늦은 완료 이벤트를 처리하는가 |
+| 세션 시간 | 가짜 시간으로 기한 경계, idle 갱신, 오래된 timer 거절을 재현하는가 |
 | wakeup 유실 | 실행이 끝나는 순간 도착한 명령이 아무도 깨우지 않은 채 큐에 남지 않는가 |
 | 수명 | 큐가 가득 찬 상태로 종료할 때 폐기 수가 맞는가, slot 재사용 후 이전 handle이 거절되는가 |
 | 종료 경쟁 | 여러 스레드가 동시에 종료를 호출해도 집계가 어긋나지 않는가 |
@@ -138,9 +161,11 @@ mo-game-project/
     transport/              # 프레이밍·연결·loopback (메시지 의미 모름)
   server/
     runtime/                # Room 실행기, 명령 큐, 지연 히스토그램
+    session/                # 연결 상태·협상·기한·제한된 응답, socket 의존 없음
     apps/
       room-runtime-demo/    # 프로세스 내부 실행 예제
       room-runtime-bench/   # 부하·지연 측정 하네스
+      session-demo/         # loopback handshake·Ping/Pong 흐름 출력
   tests/                    # 동시성·수명·측정 계약 검증
 ```
 
@@ -172,6 +197,7 @@ cmake --preset macos-debug
 cmake --build --preset macos-debug
 ctest --preset macos-debug
 ./out/build/macos-debug/room-runtime-demo
+./out/build/macos-debug/session-demo
 ```
 
 `cmake/CheckToolchain.cmake`가 구성 단계에서 C++20 컴파일과 링크를 확인합니다. Windows는 `windows-msvc` 구성에 `windows-debug`/`windows-release` 빌드, Linux는 `linux-debug`/`linux-release`를 사용합니다.
@@ -206,13 +232,13 @@ cmake --build --preset macos-release
 | 단계 | 내용 | 상태 |
 | --- | --- | --- |
 | P0 | 기술 위험 확인: transport 후보 실험, Unreal 연동 가능성, 플랫폼 빌드 | 진행 예정 |
-| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정 완료 |
+| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·최소 세션 구현, 소켓 연동 남음 |
 | P2 | UI 없이 끝까지 플레이: 파티·입장·전투·보상 영속화를 콘솔로 완주 | 미착수 |
 | P3 | 부하와 장애를 포함한 수평 확장: Directory·lease·배치·drain·노드 장애 | 미착수 |
 | P4 | Unreal 샘플 완성: 예측·보정·재접속 UX와 클라이언트 지표 | 미착수 |
 | P5 | 서비스 준비: fuzz·soak·인증·배포·복구 runbook과 출시 게이트 | 미착수 |
 
-다음 작업은 최소 플레이 범위 확정과 프로토콜·세션 설계, transport 후보의 작은 실험입니다.
+다음 작업은 같은 세션을 실제 소켓 client/server로 연결하는 작은 transport 후보 실험입니다. 최소 플레이 범위 설계와 플랫폼 CI는 병행하고, 이후 게임 명령을 Room과 연결합니다.
 
 ## 아직 확정하지 않은 것
 

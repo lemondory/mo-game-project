@@ -58,6 +58,15 @@ add_library(mo::transport ALIAS mo_transport)
 target_include_directories(mo_transport PUBLIC shared/transport)
 target_link_libraries(mo_transport PUBLIC mo::project_options)
 
+# 세션 정책은 프로토콜만 안다. transport와 엮는 일은 구동 코드가 한다.
+add_library(mo_session server/session/session.cpp)
+add_library(mo::session ALIAS mo_session)
+target_include_directories(mo_session PUBLIC server/session)
+target_link_libraries(mo_session PUBLIC mo::protocol)
+
+add_executable(session-demo server/apps/session-demo/main.cpp)
+target_link_libraries(session-demo PRIVATE mo::session mo::transport)
+
 add_executable(room-runtime-bench server/apps/room-runtime-bench/main.cpp)
 target_link_libraries(room-runtime-bench PRIVATE mo::runtime)
 
@@ -78,6 +87,15 @@ if(BUILD_TESTING)
         add_test(NAME protocol.${case} COMMAND protocol-tests ${case})
         set_tests_properties(protocol.${case} PROPERTIES TIMEOUT 20)
     endforeach()
+
+    add_executable(session-tests tests/session_tests.cpp)
+    target_link_libraries(session-tests PRIVATE mo::session mo::transport)
+    foreach(case packets handshake order rejection timeouts backpressure lifetime loopback)
+        add_test(NAME session.${case} COMMAND session-tests ${case})
+        set_tests_properties(session.${case} PROPERTIES TIMEOUT 10)
+    endforeach()
+    add_test(NAME session.demo COMMAND session-demo)
+    set_tests_properties(session.demo PROPERTIES TIMEOUT 10)
 
     add_test(NAME runtime.demo COMMAND room-runtime-demo)
     set_tests_properties(runtime.demo PROPERTIES TIMEOUT 10)
