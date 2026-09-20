@@ -37,3 +37,11 @@ if(NOT MO_SANITIZER STREQUAL "none")
     target_compile_options(mo_project_options INTERFACE ${mo_sanitizer_flags})
     target_link_options(mo_project_options INTERFACE ${mo_sanitizer_flags})
 endif()
+
+add_library(mo_runtime server/runtime/room_runtime.cpp server/runtime/latency_histogram.hpp)
+add_library(mo::runtime ALIAS mo_runtime)
+target_include_directories(mo_runtime PUBLIC server/runtime)
+target_link_libraries(mo_runtime PUBLIC mo::project_options Threads::Threads)
+
+add_executable(room-runtime-demo server/apps/room-runtime-demo/main.cpp)
+target_link_libraries(room-runtime-demo PRIVATE mo::runtime)
