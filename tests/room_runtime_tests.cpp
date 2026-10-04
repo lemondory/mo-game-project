@@ -177,15 +177,24 @@ void wakeup() {
     RoomRuntime runtime(config);
     probe.command_hook = [&](const Command& command) { entered.store(command.id + 1); };
     const auto room = add(runtime, probe);
+    // 짧은 sleep을 3,000번 반복하면 플랫폼의 타이머 해상도 때문에 대기가 누적된다.
+    // 이 경합 검사만 실행권을 양보하며 재확인한다. 진행 유실은 전체 10초 기한으로 잡는다.
+    const auto deadline = RuntimeClock::now() + 10s;
+    const auto await_progress = [&](auto predicate) {
+        while (!predicate()) {
+            check(RuntimeClock::now() < deadline, "wakeup progress timed out");
+            std::this_thread::yield();
+        }
+    };
     for (std::uint64_t i = 0; i < 3000; ++i) {
         check(runtime.try_send(room, {i, 0}) == SendResult::accepted, "wakeup enqueue failed");
         // 이전 콜백이 아직 끝나는 중일 수 있는 시점에 다음 명령을 넣는다.
-        eventually([&] { return entered.load() == i + 1; });
+        await_progress([&] { return entered.load() == i + 1; });
         if (i % 3 == 0) {
-            eventually([&] { return runtime.snapshot(room)->phase == RoomPhase::idle; });
+            await_progress([&] { return runtime.snapshot(room)->phase == RoomPhase::idle; });
         }
     }
-    eventually([&] { return runtime.snapshot(room)->processed == 3000; });
+    await_progress([&] { return runtime.snapshot(room)->processed == 3000; });
     runtime.shutdown();
     accounting(*runtime.snapshot(room));
     check(probe.overlaps == 0, "same room ran concurrently");
