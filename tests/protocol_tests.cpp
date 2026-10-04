@@ -71,7 +71,7 @@ void reader_rejects_truncation() {
     check(full.size() == 14, "handshake layout changed without a version bump");
 
     for (std::size_t length = 0; length < full.size(); ++length) {
-        Reader reader(std::span(full).first(length));
+        Reader reader{std::span{full}.first(length)};
         Handshake out;
         check(!decode(reader, out), "truncated handshake must not decode");
         check(reader.failed(), "truncation must be recorded");
@@ -181,7 +181,8 @@ void quantization_rejects_bad_values() {
     std::int64_t out = 0;
     const double nan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
-    check(!finite(nan) && !finite(inf), "NaN and infinity are not finite");
+    check(!mo::protocol::finite(nan) && !mo::protocol::finite(inf),
+          "NaN and infinity are not finite");
     check(!quantize(nan, 1000.0, -1000000, 1000000, out), "NaN must not quantize");
     check(!quantize(inf, 1000.0, -1000000, 1000000, out), "infinity must not quantize");
     check(!quantize(1.0, 0.0, -1000, 1000, out), "a non-positive scale is a programming error");

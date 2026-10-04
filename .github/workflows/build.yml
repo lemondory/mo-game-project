@@ -12,10 +12,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # 기존 Xcode 15.4에는 필수 std::jthread/stop_token 구현이 없다.
+          - os: macos-26
             configure: macos-debug
             build: macos-debug
-          - os: macos-14
+          - os: macos-26
             configure: macos-release
             build: macos-release
           - os: windows-2022
@@ -33,6 +34,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Select macOS toolchain
+        if: runner.os == 'macOS'
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+      - name: Show macOS toolchain
+        if: runner.os == 'macOS'
+        run: |
+          xcodebuild -version
+          clang++ --version
+          xcrun --show-sdk-version
       - run: cmake --preset ${{ matrix.configure }}
       - run: cmake --build --preset ${{ matrix.build }} --parallel 2
       - run: ctest --preset ${{ matrix.build }} --output-log out/build/${{ matrix.configure }}/ctest.log

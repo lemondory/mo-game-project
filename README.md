@@ -105,7 +105,7 @@ C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 
 
 ### 검증
 
-2026-09-26 로컬 검증에서 세션 추가본은 macOS Debug·Release·ASan+UBSan·TSan 구성 각각 **CTest 39개를 통과**했습니다. Windows/Linux 자동 실행 결과는 아직 확인하지 않았습니다. 이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
+2026-10-05 수정본의 로컬 검증에서 macOS Debug·Release·ASan+UBSan·TSan 구성과 Ubuntu 24.04 컨테이너의 GCC 13.3 Debug 구성은 각각 **CTest 39개를 통과**했습니다. 작업 깨우기 검사는 macOS Debug와 Linux Debug에서 각각 30회 연속 통과했습니다. [첫 자동 검증](https://github.com/lemondory/mo-game-project/actions/runs/37211273446)은 macOS 도구 모음·Linux 테스트 컴파일·Windows 테스트 시간 초과 문제로 실패했으며, 수정본의 원격 재검증은 남아 있습니다. 이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
 
 검증 대상은 실제로 실패할 수 있는 경계입니다.
 
