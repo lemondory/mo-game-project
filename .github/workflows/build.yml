@@ -1,8 +1,13 @@
 name: Runtime build and tests
 on: [push, pull_request, workflow_dispatch]
 
+permissions:
+  contents: read
+
 jobs:
   native:
+    name: ${{ matrix.os }} / ${{ matrix.build }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -30,10 +35,26 @@ jobs:
       - uses: actions/checkout@v4
       - run: cmake --preset ${{ matrix.configure }}
       - run: cmake --build --preset ${{ matrix.build }} --parallel 2
-      - run: ctest --preset ${{ matrix.build }}
+      - run: ctest --preset ${{ matrix.build }} --output-log out/build/${{ matrix.configure }}/ctest.log
+      # 테스트가 실패해도 원인과 컴파일러 구성 기록을 보관한다.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checks-${{ matrix.os }}-${{ matrix.build }}
+          path: |
+            out/build/${{ matrix.configure }}/ctest.log
+            out/build/${{ matrix.configure }}/Testing/Temporary/LastTest.log
+            out/build/${{ matrix.configure }}/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
 
   sanitizer:
+    name: Linux / ${{ matrix.sanitizer }}
+    timeout-minutes: 15
     runs-on: ubuntu-24.04
+    env:
+      # 정의되지 않은 동작도 진단만 출력하고 통과하지 않도록 한다.
+      UBSAN_OPTIONS: halt_on_error=1
     strategy:
       fail-fast: false
       matrix:
@@ -42,4 +63,17 @@ jobs:
       - uses: actions/checkout@v4
       - run: cmake --preset linux-debug -B out/build/sanitizer -DMO_SANITIZER=${{ matrix.sanitizer }}
       - run: cmake --build out/build/sanitizer --parallel 2
-      - run: ctest --test-dir out/build/sanitizer --output-on-failure
+      - run: ctest --test-dir out/build/sanitizer --output-on-failure --no-tests=error --output-log out/build/sanitizer/ctest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checks-linux-${{ matrix.sanitizer }}
+          path: |
+            out/build/sanitizer/ctest.log
+            out/build/sanitizer/Testing/Temporary/LastTest.log
+            out/build/sanitizer/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
+
+# UBSan(UndefinedBehaviorSanitizer): 정의되지 않은 동작을 실행 중 검사하는 도구.
+# artifact(보관 산출물): 자동 실행 뒤 내려받을 수 있도록 저장한 로그 등의 파일.
