@@ -5,6 +5,9 @@
 /compile_commands.json
 /vcpkg_installed/
 
+# 로컬에 설치하는 외부 라이브러리와 독립 개발 저장소
+/third-party/
+
 # IDE and OS local state
 .DS_Store
 Thumbs.db
