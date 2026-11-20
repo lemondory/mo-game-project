@@ -49,7 +49,7 @@ struct Fixture {
             [this](auto value) { result = value; ++closes; });
     }
     void send(std::span<const std::byte> bytes) { asio::write(client, asio::buffer(bytes.data(), bytes.size())); }
-    void receive() {
+    void receive(bool allow_reset = false) {
         client.non_blocking(true);
         std::array<std::byte, 4096> buffer{};
         for (;;) {
@@ -66,22 +66,29 @@ struct Fixture {
             }
             if (error == asio::error::would_block || error == asio::error::try_again) break;
             if (error == asio::error::eof) { eof = true; break; }
+            // 즉시 종료는 EOF 대신 reset으로 관측될 수 있다. 응답 수신이나
+            // 거절 ACK의 drain 검사에서는 허용하지 않고, EOF와도 구분한다.
+            if (allow_reset && error == asio::error::connection_reset) break;
             if (error) throw std::system_error(error);
         }
         client.non_blocking(false);
     }
-    template<class Predicate> void until(Predicate done) {
+    template<class Predicate> void until(Predicate done, bool allow_reset = false) {
         const auto deadline = s::Clock::now() + 5s;
         while (!done() && s::Clock::now() < deadline) {
             if (io.stopped()) io.restart();
             io.run_for(1ms);
-            receive();
+            receive(allow_reset);
         }
         check(done(), "socket session deadline exceeded");
     }
+    void until_closed() {
+        until([&] { return result.has_value(); }, true);
+        check(closes == 1, "duplicate close notification");
+    }
     void finish() {
         server->close();
-        until([&] { return result.has_value(); });
+        until_closed();
         io.restart(); io.poll();
         check(closes == 1, "duplicate close notification");
     }
@@ -156,7 +163,7 @@ void invalid() {
             fixture.send(fragment);
             fixture.client.shutdown(tcp::socket::shutdown_send);
         }
-        fixture.until([&] { return fixture.result.has_value(); });
+        fixture.until_closed();
         check(fixture.result->reason == (mode == 1 ? s::CloseReason::unexpected_message : s::CloseReason::invalid_packet), "invalid input not rejected");
         check(fixture.packets.empty(), "invalid input got response");
     }
@@ -167,7 +174,7 @@ void timeouts() {
     config.session.handshake_timeout = 40ms;
     Fixture handshake(config);
     handshake.server->start();
-    handshake.until([&] { return handshake.result.has_value(); });
+    handshake.until_closed();
     check(handshake.result->reason == s::CloseReason::handshake_timeout, "no handshake deadline");
     config.session.handshake_timeout = 2s;
     config.session.idle_timeout = 100ms;
@@ -177,7 +184,7 @@ void timeouts() {
     idle.until([&] { return idle.packets.size() == 1; });
     idle.send(wire(p::Ping{3}));
     idle.until([&] { return idle.packets.size() == 2; });
-    idle.until([&] { return idle.result.has_value(); });
+    idle.until_closed();
     check(idle.result->reason == s::CloseReason::idle_timeout, "idle timer lost after refresh");
 }
 
@@ -207,7 +214,7 @@ void shutdown() {
     Fixture lifetime;
     lifetime.server->start();
     lifetime.server.reset();
-    lifetime.until([&] { return lifetime.result.has_value(); });
+    lifetime.until_closed();
     check(lifetime.closes == 1, "destruction lost close");
 }
 
