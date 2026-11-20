@@ -1,0 +1,93 @@
+name: Socket session integration
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  integration:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26
+            preset: macos-debug
+            config: Debug
+            sanitizer: none
+          - os: macos-26
+            preset: macos-release
+            config: Release
+            sanitizer: none
+          - os: ubuntu-24.04
+            preset: linux-debug
+            config: Debug
+            sanitizer: none
+          - os: ubuntu-24.04
+            preset: linux-release
+            config: Release
+            sanitizer: none
+          - os: windows-2022
+            preset: windows-msvc
+            config: Debug
+            sanitizer: none
+          - os: windows-2022
+            preset: windows-msvc
+            config: Release
+            sanitizer: none
+          - os: ubuntu-24.04
+            preset: linux-debug
+            config: Debug
+            sanitizer: address
+          - os: ubuntu-24.04
+            preset: linux-debug
+            config: Debug
+            sanitizer: thread
+    runs-on: ${{ matrix.os }}
+    env:
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read pinned source revisions
+        id: deps
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          with open('cmake/network-dependencies.json') as source:
+              deps = json.load(source)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for name, value in deps.items():
+                  output.write(f'{name}-repository={value["repository"]}\n')
+                  output.write(f'{name}-commit={value["commit"]}\n')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.deps.outputs.cpp-network-repository }}
+          ref: ${{ steps.deps.outputs.cpp-network-commit }}
+          path: third-party/cpp-network
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.deps.outputs.asio-repository }}
+          ref: ${{ steps.deps.outputs.asio-commit }}
+          path: third-party/cpp-network/third-party/asio
+          persist-credentials: false
+      - name: Select macOS toolchain
+        if: runner.os == 'macOS'
+        run: sudo xcode-select --switch /Applications/Xcode_26.6.app/Contents/Developer
+      - run: cmake --preset ${{ matrix.preset }} -B out/socket-ci -DMO_BUILD_SOCKET_SESSION=ON -DMO_SANITIZER=${{ matrix.sanitizer }}
+      - run: cmake --build out/socket-ci --config ${{ matrix.config }} --parallel 2
+      - run: ctest --test-dir out/socket-ci -C ${{ matrix.config }} --output-on-failure --no-tests=error --output-log out/socket-ci/ctest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: socket-${{ matrix.os }}-${{ matrix.config }}-${{ matrix.sanitizer }}
+          path: |
+            out/socket-ci/ctest.log
+            out/socket-ci/Testing/Temporary/LastTest.log
+            out/socket-ci/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 7
+
+# UBSan(UndefinedBehaviorSanitizer): 정의되지 않은 동작을 검사하는 도구.

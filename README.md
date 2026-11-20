@@ -6,14 +6,16 @@
 
 ## 지금 개발하는 부분
 
-현재는 **게임 입력을 받기 전에 연결이 지켜야 할 절차를 처리하는 서버 세션**까지 구현했습니다. 게임 실행 단위인 Room과 연결 관리 단위인 Session은 별개입니다.
+현재는 **게임 입력을 받기 전에 연결이 지켜야 할 절차를 처리하는 서버 세션과 실제 소켓 연결**까지 구현했습니다. 게임 실행 단위인 Room과 연결 관리 단위인 Session은 별개입니다.
 
 ```text
 바이트 수신 → 프레임 복원 → 메시지 해석 → 세션 상태 확인 → 게임 명령 변환 → Room 실행
-  다음 B       구현됨        구현됨        이번 A 완료       이후 연동       기반 구현됨
+  구현됨       구현됨        구현됨          구현됨           이후 연동       기반 구현됨
 ```
 
-지금은 실제 소켓 대신 메모리 loopback을 사용해 `Handshake → 승인 ACK → Ping/Pong → 종료`를 검증합니다. 다음에는 같은 세션을 실제 소켓에 연결하고, 그 뒤 작은 이동·공격 명령을 Room에 전달합니다. 계정 인증과 전투 판정은 아직 구현하지 않았습니다.
+메모리 loopback과 선택 빌드의 실제 로컬 소켓으로 `Handshake → 승인 ACK → Ping/Pong → 종료`를 검증합니다. 다음에는 최소 플레이 범위를 정하고 작은 이동·공격 명령을 Room에 전달합니다. 계정 인증과 전투 판정은 아직 구현하지 않았습니다.
+
+네트워크 송수신은 별도 저장소인 [cpp-network](https://github.com/lemondory/cpp-network)에서 standalone Asio 기반으로 개발합니다. 바이트 송수신·대기량 제한·즉시 종료를 담당하며, 이 저장소의 `server/net/`이 그 위에 게임 세션을 연결합니다. [cpp-db](https://github.com/lemondory/cpp-db)는 드라이버 선택 전의 프로젝트 구조만 준비했습니다.
 
 ## 프로젝트 목표
 
@@ -59,7 +61,7 @@ flowchart LR
 
 ## 현재 구현 범위
 
-C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 의존성은 없습니다.
+기본 빌드는 C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 의존성이 없습니다. 실제 소켓 연결은 선택 빌드이며 cpp-network와 standalone Asio를 고정 커밋으로 사용합니다.
 
 **[Room runtime](server/runtime/room_runtime.cpp)** — transport·DB·게임 규칙에 독립적인 실행 기반입니다.
 
@@ -99,13 +101,30 @@ C++20·CMake·표준 스레드 라이브러리만 사용하며 외부 런타임 
 - handshake·idle·송신 정체·거절 종료의 기한을 검사하며, 이전 연결·작업의 늦은 이벤트를 토큰으로 무효화합니다.
 - core는 프로토콜에만 의존합니다. driver가 시간·frame·송신 결과·종료 이벤트를 직렬로 전달하고, 소켓과 Room을 조립하는 책임은 별도로 둡니다.
 
-`session-demo`는 이 흐름을 출력하는 실행 예제입니다. 전투 입력의 시퀀스와 소켓 callback 수명 검증은 이후 단계입니다.
+`session-demo`는 이 흐름을 loopback 위에서 출력하는 실행 예제입니다. 전투 입력의 시퀀스 검증은 이후 단계입니다.
+
+**[소켓 세션](server/net/socket_session.cpp)** — 위 세션을 cpp-network의 실제 TCP 연결에 붙입니다. 기본 빌드에는 포함되지 않으며 `MO_BUILD_SOCKET_SESSION=ON`일 때만 빌드합니다.
+
+- 연결의 수신·송신 처리와 세션 타이머를 하나의 strand에서 실행해 잠금 없이 직렬화합니다. 소켓 타입을 strand 실행기로 제한해 다른 실행 문맥이 끼어들지 못하게 합니다.
+- 세션이 입력을 받을 수 없거나 수신 버퍼 여유가 한 번 읽기 크기보다 작으면 다음 읽기를 허용하지 않습니다. 송신이 막히면 입력 처리도 멈춰 연결별 송수신 대기량을 제한합니다. 이 상한은 프로세스 전체 메모리나 다른 연결의 응답성을 보장하지 않으며, 전체 연결 수·작업량 제한은 후속 범위입니다.
+- 한 번에 처리할 프레임 수와 시간에 상한을 두고, 남은 프레임은 다음 차례로 넘깁니다.
+- cpp-network에는 송신 완료 이벤트가 없어, 거절 응답 뒤 종료할 때만 송신 대기량을 짧은 주기로 확인합니다.
+
+`socket-session-demo`는 localhost의 실제 소켓으로 Handshake·Ping·Pong을 주고받는 예제입니다.
+
+송신 대기열 수락·로컬 쓰기 완료·클라이언트 처리 완료는 서로 다릅니다. 현재 송신 기한은 세션 응답이 로컬 송신 대기열에 수락되지 못한 시간을 제한합니다. 응답을 읽지 않는 상대가 일정 시간 안에 반드시 이 기한을 넘는다고 가정하지 않습니다. 게임 상태 처리 지연을 판단할 확인 응답과 재동기화 정책은 snapshot 설계 때 정의합니다.
 
 이동·전투·snapshot 메시지와 양자화 스케일은 아직 없습니다. 필요한 필드·범위·정밀도를 정하기 위해 먼저 최소 전투 범위를 설계합니다. 배포 후에도 바꿀 수 있지만 규약 버전 갱신과 클라이언트 갱신 또는 호환 처리가 필요합니다. 현재 세션은 서로 다른 버전을 거절하며 구버전 변환 기능은 없습니다.
 
 ### 검증
 
-2026-10-05 수정본의 로컬 검증에서 macOS Debug·Release·ASan+UBSan·TSan 구성과 Ubuntu 24.04 컨테이너의 GCC 13.3 Debug 구성은 각각 **CTest 39개를 통과**했습니다. 작업 깨우기 검사는 macOS Debug와 Linux Debug에서 각각 30회 연속 통과했습니다. [첫 자동 검증](https://github.com/lemondory/mo-game-project/actions/runs/37211273446)은 macOS 도구 모음·Linux 테스트 컴파일·Windows 테스트 시간 초과 문제로 실패했으며, 수정본의 원격 재검증은 남아 있습니다. 이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
+기본 빌드는 [GitHub Actions](https://github.com/lemondory/mo-game-project/actions/runs/37212801519)에서 macOS·Ubuntu·Windows의 Debug/Release와 Linux ASan·TSan, 8개 구성 모두 **CTest 39개를 통과**했습니다. 로컬에서도 macOS Debug·Release·ASan+UBSan·TSan과 Ubuntu 24.04 컨테이너의 GCC 13.3 Debug 구성에서 같은 39개를 통과했고, 작업 깨우기 검사는 macOS Debug와 Linux Debug에서 각각 30회 연속 통과했습니다.
+
+소켓 세션 검사는 10개를 추가해 전체 49개이며, 2026-11-21 로컬 macOS Debug·Release·ASan+UBSan·TSan에서 각각 모두 통과했습니다. 같은 날 고정 의존성 cpp-network의 독립 Debug 테스트 10개도 통과했습니다. 응답을 읽지 않는 클라이언트 검사에서는 실제 요청 처리·송신 정체·대기량 상한·종료 완료를 확인합니다. 커널 버퍼가 특정 시간 안에 차야 한다는 가정은 제거했고, 송신 제한 시간의 정책은 기존 가상 시간 검사로 유지합니다.
+
+2026-11-21 [소켓 통합 원격 검증](https://github.com/lemondory/mo-game-project/actions/runs/44768364610)에서 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 **8개 구성 모두 CTest 49개를 통과**했습니다. 첫 Windows 검사에서는 즉시 종료를 EOF로만 가정한 테스트가 실패했습니다. 서버 종료를 기다릴 때만 연결 리셋도 허용하도록 수정했고, 응답 교환과 거절 ACK 전달·EOF 검사는 유지했습니다. cpp-network의 고정 커밋도 원격에 게시했으며, [독립 CI 8개 구성](https://github.com/lemondory/cpp-network/actions/runs/44767756982)이 모두 통과했습니다.
+
+이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
 
 검증 대상은 실제로 실패할 수 있는 경계입니다.
 
@@ -155,18 +174,23 @@ Room 64개 / worker 4개 / 60 Hz / 12초. 비싼 Room 4개(8배 비용)를 고�
 mo-game-project/
   CMakeLists.txt
   CMakePresets.json         # macOS/Windows/Linux 구성과 sanitizer 프리셋
-  cmake/                    # 공통 빌드·toolchain 확인
+  cmake/                    # 공통 빌드·toolchain 확인·외부 라이브러리 고정 커밋
   shared/
     protocol/               # 메시지 정의와 바이트 변환 (소켓 의존 없음)
     transport/              # 프레이밍·연결·loopback (메시지 의미 모름)
   server/
     runtime/                # Room 실행기, 명령 큐, 지연 히스토그램
     session/                # 연결 상태·협상·기한·제한된 응답, socket 의존 없음
+    net/                    # 세션과 실제 TCP 연결 조립 (선택 빌드)
     apps/
       room-runtime-demo/    # 프로세스 내부 실행 예제
       room-runtime-bench/   # 부하·지연 측정 하네스
       session-demo/         # loopback handshake·Ping/Pong 흐름 출력
+      socket-session-demo/  # localhost 실제 소켓 handshake·Ping/Pong
   tests/                    # 동시성·수명·측정 계약 검증
+  third-party/              # 로컬 의존성 공간, 게임 Git에서 제외
+    cpp-network/            # 독립 저장소, 내부에도 third-party/ 사용
+    cpp-db/                 # 독립 저장소, 아직 DB 드라이버 없음
 ```
 
 예정 구조입니다.
@@ -179,7 +203,6 @@ mo-game-project/
     persistence/            # transaction, 원장, outbox
   shared/
     core/                   # ID, clock, 공통 오류
-    transport/asio/         # 실제 소켓 구현
     simulation/             # 엔진 독립 전투·목표
   clients/unreal/           # Unreal 샘플 클라이언트
   tools/load-client/        # 실제 프로토콜 부하 발생기
@@ -227,24 +250,52 @@ cmake --build --preset macos-release
 
 `--placement`를 `shared`와 `fixed`로 바꿔 실행하면 위 비교 결과를 재현할 수 있습니다.
 
+### 소켓 세션 통합 빌드 (선택)
+
+실제 TCP 소켓으로 세션을 검증할 때만 필요합니다. 기본 빌드는 아래 준비 없이 동작합니다. 외부 라이브러리는 자동으로 내려받지 않습니다. [cmake/network-dependencies.json](cmake/network-dependencies.json)의 cpp-network 커밋과 로컬 HEAD가 다르면 구성을 거절하며, Asio는 헤더의 버전을 검사합니다. 자동 검사는 두 저장소 모두 기록된 커밋을 가져옵니다. 로컬 작업 트리의 수정 여부까지 강제하지는 않습니다.
+
+아래 clone 절차는 처음 준비할 때만 사용합니다. 이미 저장소가 있다면 변경 사항을 보존하고 필요한 커밋이 준비되었는지 확인합니다. cpp-network의 고정 커밋은 원격에 먼저 푸시되어 있어야 합니다.
+
+```sh
+rev() { python3 -c "import json,sys; print(json.load(open('cmake/network-dependencies.json'))[sys.argv[1]]['commit'])" "$1"; }
+
+git clone https://github.com/lemondory/cpp-network.git third-party/cpp-network
+git -C third-party/cpp-network checkout "$(rev cpp-network)"
+git clone https://github.com/chriskohlhoff/asio.git third-party/cpp-network/third-party/asio
+git -C third-party/cpp-network/third-party/asio checkout "$(rev asio)"
+
+cmake --preset macos-debug -B out/socket-macos-debug -DMO_BUILD_SOCKET_SESSION=ON
+cmake --build out/socket-macos-debug
+ctest --test-dir out/socket-macos-debug --output-on-failure --no-tests=error
+./out/socket-macos-debug/socket-session-demo
+```
+
+라이브러리를 올릴 때는 하위 저장소에서 새 커밋을 만든 뒤 manifest의 커밋을 함께 바꿉니다. CMake는 로컬 작업을 덮어쓰지 않도록 하위 저장소를 되돌리지 않습니다. `third-party/`는 게임 저장소에서 제외되며, [cpp-db](https://github.com/lemondory/cpp-db)는 아직 게임 빌드에 쓰이지 않습니다.
+
 ## 진행 계획
 
 | 단계 | 내용 | 상태 |
 | --- | --- | --- |
-| P0 | 기술 위험 확인: transport 후보 실험, Unreal 연동 가능성, 플랫폼 빌드 | 진행 예정 |
-| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·최소 세션 구현, 소켓 연동 남음 |
+| P0 | 기술 위험 확인: transport 후보 실험, Unreal 연동 가능성, 플랫폼 빌드 | 플랫폼 빌드 CI 통과, Asio TCP 경로 구현. Unreal 연동·UDP 후보 비교 남음 |
+| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·세션·소켓 연동 구현 및 소켓 플랫폼 검증 완료 |
 | P2 | UI 없이 끝까지 플레이: 파티·입장·전투·보상 영속화를 콘솔로 완주 | 미착수 |
 | P3 | 부하와 장애를 포함한 수평 확장: Directory·lease·배치·drain·노드 장애 | 미착수 |
 | P4 | Unreal 샘플 완성: 예측·보정·재접속 UX와 클라이언트 지표 | 미착수 |
 | P5 | 서비스 준비: fuzz·soak·인증·배포·복구 runbook과 출시 게이트 | 미착수 |
 
-다음 작업은 같은 세션을 실제 소켓 client/server로 연결하는 작은 transport 후보 실험입니다. 최소 플레이 범위 설계와 플랫폼 CI는 병행하고, 이후 게임 명령을 Room과 연결합니다.
+다음 작업은 최소 플레이 범위를 설계하는 것입니다. 이동·공격 규칙과 입력 메시지·상태 동기화 범위를 정한 뒤, 세션이 받은 입력을 게임 명령으로 변환해 Room과 연결합니다.
 
 ## 아직 확정하지 않은 것
 
 확정된 것은 엔진 독립 C++ 서버 + Unreal 클라이언트 구조와 개발 환경입니다. 아래는 측정·결정 전의 제안입니다.
 
-- 네트워크 라이브러리(Asio / GameNetworkingSockets)와 패킷 직렬화 방식
+- 전투 입력·snapshot의 전송 방식(TCP 유지 / UDP 기반 GameNetworkingSockets)과 패킷 직렬화 방식. 연결 협상 경로는 cpp-network(standalone Asio, TCP)로 구현했습니다
 - 파티 인원(4인 PvE 제안), tick rate(30/60 Hz 대조 예정), snapshot 주기
 - 영속 계층(PostgreSQL 제안), 장애 시 던전 중단·입장 자원 복구 정책
 - Room 실행기의 최종 구현 — 공유 worker 풀을 기준으로 후보를 비교할 예정
+
+<!-- ACK(Acknowledgment): 확인 응답. handshake: 연결 규약을 확인하는 접속 협상. -->
+<!-- TCP(Transmission Control Protocol): 순서 있는 신뢰성 바이트 스트림 전송 규약. -->
+<!-- snapshot(스냅샷): 특정 시점의 게임 상태 데이터. strand: 처리를 한 번에 하나씩 실행하는 Asio 실행 수단. -->
+<!-- ASan(AddressSanitizer): 메모리 오류 검사. UBSan(UndefinedBehaviorSanitizer): 정의되지 않은 동작 검사. -->
+<!-- TSan(ThreadSanitizer): 스레드 간 데이터 경합 검사. CI(Continuous Integration): 변경마다 수행하는 자동 빌드·검사. -->
