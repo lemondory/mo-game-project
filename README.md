@@ -122,7 +122,7 @@ flowchart LR
 
 소켓 세션 검사는 10개를 추가해 전체 49개이며, 2026-11-21 로컬 macOS Debug·Release·ASan+UBSan·TSan에서 각각 모두 통과했습니다. 같은 날 고정 의존성 cpp-network의 독립 Debug 테스트 10개도 통과했습니다. 응답을 읽지 않는 클라이언트 검사에서는 실제 요청 처리·송신 정체·대기량 상한·종료 완료를 확인합니다. 커널 버퍼가 특정 시간 안에 차야 한다는 가정은 제거했고, 송신 제한 시간의 정책은 기존 가상 시간 검사로 유지합니다.
 
-이번 소켓 통합의 Linux·Windows·원격 검증은 남아 있습니다. [소켓 통합 워크플로](.github/workflows/socket-session.yml)는 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 8개 구성을 준비했습니다. 실행하려면 먼저 cpp-network의 고정 커밋을 원격 저장소에 게시해야 합니다. 2026-11-21 확인 시 해당 저장소는 비어 있어 자동 검증에서 의존성을 가져올 수 없는 상태입니다. 로컬 Linux 재검증도 Docker 실행 환경이 준비되지 않아 수행하지 않았습니다.
+2026-11-21 [소켓 통합 원격 검증](https://github.com/lemondory/mo-game-project/actions/runs/44768364610)에서 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 **8개 구성 모두 CTest 49개를 통과**했습니다. 첫 Windows 검사에서는 즉시 종료를 EOF로만 가정한 테스트가 실패했습니다. 서버 종료를 기다릴 때만 연결 리셋도 허용하도록 수정했고, 응답 교환과 거절 ACK 전달·EOF 검사는 유지했습니다. cpp-network의 고정 커밋도 원격에 게시했으며, [독립 CI 8개 구성](https://github.com/lemondory/cpp-network/actions/runs/44767756982)이 모두 통과했습니다.
 
 이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
 
@@ -277,13 +277,13 @@ ctest --test-dir out/socket-macos-debug --output-on-failure --no-tests=error
 | 단계 | 내용 | 상태 |
 | --- | --- | --- |
 | P0 | 기술 위험 확인: transport 후보 실험, Unreal 연동 가능성, 플랫폼 빌드 | 플랫폼 빌드 CI 통과, Asio TCP 경로 구현. Unreal 연동·UDP 후보 비교 남음 |
-| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·세션·소켓 연동 구현. 소켓 플랫폼 검증 남음 |
+| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·세션·소켓 연동 구현 및 소켓 플랫폼 검증 완료 |
 | P2 | UI 없이 끝까지 플레이: 파티·입장·전투·보상 영속화를 콘솔로 완주 | 미착수 |
 | P3 | 부하와 장애를 포함한 수평 확장: Directory·lease·배치·drain·노드 장애 | 미착수 |
 | P4 | Unreal 샘플 완성: 예측·보정·재접속 UX와 클라이언트 지표 | 미착수 |
 | P5 | 서비스 준비: fuzz·soak·인증·배포·복구 runbook과 출시 게이트 | 미착수 |
 
-다음 작업은 cpp-network의 고정 커밋을 원격에 게시한 뒤, 소켓 통합 작업 브랜치에서 macOS·Linux·Windows 자동 검증을 통과시키는 것입니다. 이후 최소 플레이 범위를 설계하고 게임 명령을 Room과 연결합니다.
+다음 작업은 최소 플레이 범위를 설계하는 것입니다. 이동·공격 규칙과 입력 메시지·상태 동기화 범위를 정한 뒤, 세션이 받은 입력을 게임 명령으로 변환해 Room과 연결합니다.
 
 ## 아직 확정하지 않은 것
 
