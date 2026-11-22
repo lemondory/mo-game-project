@@ -138,7 +138,10 @@ void pipelined(bool budget) {
 
 void rejection() {
     for (bool version : {false, true}) {
-        Fixture fixture;
+        n::SocketConfig config;
+        // 종료 기한보다 먼저 쓰기 완료 이벤트만으로 ACK와 종료가 전달되어야 한다.
+        config.session.close_timeout = 30s;
+        Fixture fixture(config);
         fixture.server->start();
         fixture.send(wire(p::Handshake{static_cast<std::uint16_t>(version ? 99 : p::wire_version), 0, version ? 1u : 99u}));
         fixture.until([&] { return fixture.result && fixture.eof; });
@@ -147,6 +150,8 @@ void rejection() {
         check(ack.status == (version ? p::HandshakeStatus::version_mismatch : p::HandshakeStatus::build_mismatch), "rejection reason");
         check(fixture.result->reason == (version ? s::CloseReason::version_mismatch : s::CloseReason::build_mismatch), "session reason lost");
         check(!ack.session.valid() && fixture.closes == 1, "rejection lifetime");
+        check(fixture.result->stats.completed_send_bytes == fixture.result->stats.accepted_send_bytes &&
+              fixture.result->stats.completed_send_bytes > 0, "rejection write completion missing");
     }
 }
 

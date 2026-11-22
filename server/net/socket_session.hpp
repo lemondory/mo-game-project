@@ -18,13 +18,13 @@ struct SocketConfig {
     std::size_t receive_buffer_bytes = 4096;
     std::size_t frames_per_turn = 32;
     std::chrono::microseconds processing_budget{500};
-    // 현재 전송 라이브러리에 drain 완료 이벤트가 없어 거절 응답 종료 때만 사용한다.
-    std::chrono::milliseconds drain_probe{5};
 };
 struct SocketStats {
     std::uint64_t received_bytes{};
     // 로컬 송신 대기열에 수락된 바이트다. 원격 수신·처리 완료량이 아니다.
     std::uint64_t accepted_send_bytes{};
+    // 전체 로컬 쓰기가 성공한 송신의 바이트 수다. 원격 처리 완료량은 아니다.
+    std::uint64_t completed_send_bytes{};
     std::uint64_t frames{};
     std::uint64_t send_blocks{};
     std::uint64_t budget_yields{};

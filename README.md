@@ -13,7 +13,7 @@
   구현됨       구현됨        구현됨          구현됨           이후 연동       기반 구현됨
 ```
 
-메모리 loopback과 선택 빌드의 실제 로컬 소켓으로 `Handshake → 승인 ACK → Ping/Pong → 종료`를 검증합니다. 다음에는 최소 플레이 범위를 정하고 작은 이동·공격 명령을 Room에 전달합니다. 계정 인증과 전투 판정은 아직 구현하지 않았습니다.
+메모리 loopback과 선택 빌드의 실제 로컬 소켓으로 `Handshake → 승인 ACK → Ping/Pong → 종료`를 검증합니다. 현재는 게임과 무관하게 정할 수 있는 네트워크 기반을 먼저 보완하고 있습니다. 연결 수락·접속과 송신 완료·정상 종료를 cpp-network의 로컬 기능 브랜치에 구현했고, 이 브랜치에서는 세션 종료를 완료 이벤트에 연결합니다. 다음은 다중 연결 관리와 부하 검증입니다. 계정 인증과 전투 판정은 아직 구현하지 않았습니다.
 
 네트워크 송수신은 별도 저장소인 [cpp-network](https://github.com/lemondory/cpp-network)에서 standalone Asio 기반으로 개발합니다. 바이트 송수신·대기량 제한·즉시 종료를 담당하며, 이 저장소의 `server/net/`이 그 위에 게임 세션을 연결합니다. [cpp-db](https://github.com/lemondory/cpp-db)는 드라이버 선택 전의 프로젝트 구조만 준비했습니다.
 
@@ -108,7 +108,8 @@ flowchart LR
 - 연결의 수신·송신 처리와 세션 타이머를 하나의 strand에서 실행해 잠금 없이 직렬화합니다. 소켓 타입을 strand 실행기로 제한해 다른 실행 문맥이 끼어들지 못하게 합니다.
 - 세션이 입력을 받을 수 없거나 수신 버퍼 여유가 한 번 읽기 크기보다 작으면 다음 읽기를 허용하지 않습니다. 송신이 막히면 입력 처리도 멈춰 연결별 송수신 대기량을 제한합니다. 이 상한은 프로세스 전체 메모리나 다른 연결의 응답성을 보장하지 않으며, 전체 연결 수·작업량 제한은 후속 범위입니다.
 - 한 번에 처리할 프레임 수와 시간에 상한을 두고, 남은 프레임은 다음 차례로 넘깁니다.
-- cpp-network에는 송신 완료 이벤트가 없어, 거절 응답 뒤 종료할 때만 송신 대기량을 짧은 주기로 확인합니다.
+- 거절 ACK를 수락하면 cpp-network의 `close_after_flush`로 로컬 쓰기를 끝내고 종료합니다. 종료 완료 이벤트가 세션을 마무리하므로 송신 대기량을 주기적으로 조회하지 않습니다. 세션의 기존 종료 기한과 즉시 취소 정책은 유지합니다.
+- 로컬 송신 수락량과 전체 쓰기 성공량을 각각 집계합니다. 쓰기 완료는 원격 수신·처리 확인을 의미하지 않습니다.
 
 `socket-session-demo`는 localhost의 실제 소켓으로 Handshake·Ping·Pong을 주고받는 예제입니다.
 
@@ -122,7 +123,9 @@ flowchart LR
 
 소켓 세션 검사는 10개를 추가해 전체 49개이며, 2026-11-21 로컬 macOS Debug·Release·ASan+UBSan·TSan에서 각각 모두 통과했습니다. 같은 날 고정 의존성 cpp-network의 독립 Debug 테스트 10개도 통과했습니다. 응답을 읽지 않는 클라이언트 검사에서는 실제 요청 처리·송신 정체·대기량 상한·종료 완료를 확인합니다. 커널 버퍼가 특정 시간 안에 차야 한다는 가정은 제거했고, 송신 제한 시간의 정책은 기존 가상 시간 검사로 유지합니다.
 
-2026-11-21 [소켓 통합 원격 검증](https://github.com/lemondory/mo-game-project/actions/runs/44768364610)에서 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 **8개 구성 모두 CTest 49개를 통과**했습니다. 첫 Windows 검사에서는 즉시 종료를 EOF로만 가정한 테스트가 실패했습니다. 서버 종료를 기다릴 때만 연결 리셋도 허용하도록 수정했고, 응답 교환과 거절 ACK 전달·EOF 검사는 유지했습니다. cpp-network의 고정 커밋도 원격에 게시했으며, [독립 CI 8개 구성](https://github.com/lemondory/cpp-network/actions/runs/44767756982)이 모두 통과했습니다.
+초기 소켓 통합 커밋 `278f8ae`는 2026-11-21 [원격 검증](https://github.com/lemondory/mo-game-project/actions/runs/44768364610)에서 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 **8개 구성 모두 CTest 49개를 통과**했습니다. 첫 Windows 검사에서는 즉시 종료를 EOF로만 가정한 테스트가 실패했습니다. 서버 종료를 기다릴 때만 연결 리셋도 허용하도록 수정했고, 응답 교환과 거절 ACK 전달·EOF 검사는 유지했습니다. 당시 의존성 cpp-network `75f8f7d`도 [독립 CI 8개 구성](https://github.com/lemondory/cpp-network/actions/runs/44767756982)이 모두 통과했습니다.
+
+이번 종료 이벤트 연동은 cpp-network `66792b0`을 사용합니다. 2026-11-21~22 로컬 macOS Debug·Release·ASan+UBSan·TSan에서 각각 **CTest 49개를 통과**했습니다. 거절 ACK 검사는 종료 기한을 30초로 설정하고 5초 안에 ACK·쓰기 완료 집계·EOF·종료 통지를 확인해, 기한 만료를 기다리지 않고 완료 이벤트로 끝나는지 검사합니다. 이 변경의 Linux·Windows 및 원격 CI는 사용자 요청에 따라 보류했습니다.
 
 이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
 
@@ -252,6 +255,17 @@ cmake --build --preset macos-release
 
 ### 소켓 세션 통합 빌드 (선택)
 
+현재 브랜치의 cpp-network 고정 커밋 `66792b0`은 로컬에만 있습니다. 사용자 요청으로 원격 푸시·PR·CI를 보류했습니다. 아래 원격 clone 절차는 의존성 게시를 재개한 뒤 사용하며, 현재 로컬 worktree에서는 다음과 같이 구성합니다.
+
+```sh
+# out/game-drain-events에서 실행. 기존 소켓 통합 작업 트리는 유지합니다.
+cmake --preset macos-debug -B ../game-drain-debug -DMO_BUILD_SOCKET_SESSION=ON \
+  -DMO_CPP_NETWORK_SOURCE_DIR="$PWD/../network-drain-close" \
+  -DCPP_NETWORK_ASIO_ROOT="$PWD/../../third-party/cpp-network/third-party/asio"
+cmake --build ../game-drain-debug --parallel 4
+ctest --test-dir ../game-drain-debug --output-on-failure --no-tests=error
+```
+
 실제 TCP 소켓으로 세션을 검증할 때만 필요합니다. 기본 빌드는 아래 준비 없이 동작합니다. 외부 라이브러리는 자동으로 내려받지 않습니다. [cmake/network-dependencies.json](cmake/network-dependencies.json)의 cpp-network 커밋과 로컬 HEAD가 다르면 구성을 거절하며, Asio는 헤더의 버전을 검사합니다. 자동 검사는 두 저장소 모두 기록된 커밋을 가져옵니다. 로컬 작업 트리의 수정 여부까지 강제하지는 않습니다.
 
 아래 clone 절차는 처음 준비할 때만 사용합니다. 이미 저장소가 있다면 변경 사항을 보존하고 필요한 커밋이 준비되었는지 확인합니다. cpp-network의 고정 커밋은 원격에 먼저 푸시되어 있어야 합니다.
@@ -277,13 +291,23 @@ ctest --test-dir out/socket-macos-debug --output-on-failure --no-tests=error
 | 단계 | 내용 | 상태 |
 | --- | --- | --- |
 | P0 | 기술 위험 확인: transport 후보 실험, Unreal 연동 가능성, 플랫폼 빌드 | 플랫폼 빌드 CI 통과, Asio TCP 경로 구현. Unreal 연동·UDP 후보 비교 남음 |
-| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·세션·소켓 연동 구현 및 소켓 플랫폼 검증 완료 |
+| P1 | 런타임과 측정 기반: Room 실행기, 지연 분포, session 소유권, 부하 발생기 | 실행기·측정·세션·소켓 연동 구현. 연결 수락·접속과 송신 완료·종료 연동의 로컬 검증 완료. 다중 연결 관리·검증 남음 |
 | P2 | UI 없이 끝까지 플레이: 파티·입장·전투·보상 영속화를 콘솔로 완주 | 미착수 |
 | P3 | 부하와 장애를 포함한 수평 확장: Directory·lease·배치·drain·노드 장애 | 미착수 |
 | P4 | Unreal 샘플 완성: 예측·보정·재접속 UX와 클라이언트 지표 | 미착수 |
 | P5 | 서비스 준비: fuzz·soak·인증·배포·복구 runbook과 출시 게이트 | 미착수 |
 
-다음 작업은 최소 플레이 범위를 설계하는 것입니다. 이동·공격 규칙과 입력 메시지·상태 동기화 범위를 정한 뒤, 세션이 받은 입력을 게임 명령으로 변환해 Room과 연결합니다.
+게임 입력을 연결하기 전에 공통 네트워크 작업을 다음 순서로 진행합니다. 원격 작업은 보류하며 큰 작업별 로컬 브랜치와 worktree를 유지합니다.
+
+| 작업 | 저장소·브랜치 | 상태 |
+| --- | --- | --- |
+| 연결 수락·접속 | cpp-network / feature/accept-connect | 로컬 구현·검증 완료 |
+| 송신 완료·기한이 있는 종료 | cpp-network / feature/drain-close | 로컬 4개 구성 각 31개, 설치 소비자 2개 통과 |
+| 세션의 종료 이벤트 연결 | 게임 / feature/socket-drain-events | 로컬 4개 구성 각각 49개 검사 통과 |
+| 다중 연결 관리 | 게임 / feature/network-host (예정) | 세션 등록·해제, 연결 수·총 대기량 제한, 서버 전체 종료 |
+| 다중 연결 검증 | 게임 / feature/network-load-validation (예정) | 느린 상대·접속 폭주·끊김·장시간 부하에서 상한·격리·정리 검증 |
+
+이후 최소 플레이 범위, 이동·공격 입력과 상태 동기화를 설계하고 게임 명령을 Room에 연결합니다.
 
 ## 아직 확정하지 않은 것
 

@@ -26,6 +26,7 @@ struct SocketSession::Impl : std::enable_shared_from_this<Impl> {
     bool drive_posted = false;
     bool timer_waiting = false;
     bool timer_cancel_requested = false;
+    bool drain_requested = false;
 
     Impl(SerialExecutor executor, SocketConfig settings, protocol::SessionId id,
          std::uint64_t generation, OnClosed closed)
@@ -38,8 +39,7 @@ struct SocketSession::Impl : std::enable_shared_from_this<Impl> {
         if (!config.transport.receive_chunk || config.receive_buffer_bytes < one_frame ||
             config.transport.receive_chunk > config.receive_buffer_bytes - one_frame ||
             config.transport.send_bytes < one_frame || !config.frames_per_turn ||
-            config.processing_budget <= std::chrono::microseconds::zero() ||
-            config.drain_probe <= std::chrono::milliseconds::zero() || !on_closed)
+            config.processing_budget <= std::chrono::microseconds::zero() || !on_closed)
             throw std::invalid_argument("invalid socket session bounds or callback");
         output.reserve(one_frame);
     }
@@ -62,7 +62,11 @@ struct SocketSession::Impl : std::enable_shared_from_this<Impl> {
             [weak](auto info) {
                 if (auto self = weak.lock()) self->transport_closed(info);
             },
-            [weak] { if (auto self = weak.lock()) self->drive(); }});
+            [weak] { if (auto self = weak.lock()) self->drive(); },
+            [weak](auto info) {
+                if (auto self = weak.lock(); self && !self->finished && info.status == cpp_network::WriteStatus::written)
+                    self->stats.completed_send_bytes += info.bytes;
+            }});
     }
 
     void invalid_frame() {
@@ -119,9 +123,13 @@ struct SocketSession::Impl : std::enable_shared_from_this<Impl> {
             ++processed;
             (void)core.on_frame(core.generation(), frame, session::Clock::now());
         }
-        if (core.close_mode() == session::CloseMode::drain && connection->pending().messages == 0)
-            core.on_transport_drained(core.generation(), session::Clock::now());
         if (core.state() == session::State::closed) connection->close();
+        else if (core.close_mode() == session::CloseMode::drain) {
+            if (!drain_requested) {
+                drain_requested = true;
+                connection->close_after_flush(core.timer()->deadline);
+            }
+        }
         else if (!drive_posted && core.can_receive() && frames.capacity() >= config.transport.receive_chunk)
             connection->resume();
         arm_timer();
@@ -138,9 +146,7 @@ struct SocketSession::Impl : std::enable_shared_from_this<Impl> {
         }
         // 종료 취소 완료까지 이 타이머의 핸들러가 상태 수명을 유지한다.
         // 실행 문맥이 파괴되어도 핸들러 해제로 정리되며 자기 소유 순환 참조는 없다.
-        auto due = token ? token->deadline : session::Time::max();
-        if (core.close_mode() == session::CloseMode::drain)
-            due = std::min(due, session::Clock::now() + config.drain_probe);
+        const auto due = token ? token->deadline : session::Time::max();
         if (timer_waiting) {
             // 기한 연장은 이전 타이머가 깨었을 때 반영한다. 취소 완료도 한 개만 대기한다.
             if (due < timer.expiry() && !timer_cancel_requested) {
@@ -164,8 +170,12 @@ struct SocketSession::Impl : std::enable_shared_from_this<Impl> {
 
     void transport_closed(cpp_network::CloseInfo info) {
         if (finished) return;
+        const auto now = session::Clock::now();
+        if (info.reason == cpp_network::CloseReason::drained)
+            core.on_transport_drained(core.generation(), now);
         const bool error = info.reason == cpp_network::CloseReason::io_error ||
-                           info.reason == cpp_network::CloseReason::callback_error;
+                           info.reason == cpp_network::CloseReason::callback_error ||
+                           info.reason == cpp_network::CloseReason::drain_timeout;
         if (info.reason == cpp_network::CloseReason::peer && core.can_receive() && frames.buffered())
             invalid_frame();
         core.on_transport_closed(core.generation(), error, session::Clock::now());
