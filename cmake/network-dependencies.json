@@ -1,7 +1,7 @@
 {
   "cpp-network": {
     "repository": "lemondory/cpp-network",
-    "commit": "66792b01ac395f93da14abd874a2fb9ace21d8cf"
+    "commit": "6f4af48bf8791c4821235cdf3263f50a99dc0ab2"
   },
   "asio": {
     "repository": "chriskohlhoff/asio",

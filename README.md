@@ -125,7 +125,7 @@ flowchart LR
 
 초기 소켓 통합 커밋 `278f8ae`는 2026-11-21 [원격 검증](https://github.com/lemondory/mo-game-project/actions/runs/44768364610)에서 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 **8개 구성 모두 CTest 49개를 통과**했습니다. 첫 Windows 검사에서는 즉시 종료를 EOF로만 가정한 테스트가 실패했습니다. 서버 종료를 기다릴 때만 연결 리셋도 허용하도록 수정했고, 응답 교환과 거절 ACK 전달·EOF 검사는 유지했습니다. 당시 의존성 cpp-network `75f8f7d`도 [독립 CI 8개 구성](https://github.com/lemondory/cpp-network/actions/runs/44767756982)이 모두 통과했습니다.
 
-이번 종료 이벤트 연동은 cpp-network `66792b0`을 사용합니다. 2026-11-21~22 로컬 macOS Debug·Release·ASan+UBSan·TSan에서 각각 **CTest 49개를 통과**했습니다. 거절 ACK 검사는 종료 기한을 30초로 설정하고 5초 안에 ACK·쓰기 완료 집계·EOF·종료 통지를 확인해, 기한 만료를 기다리지 않고 완료 이벤트로 끝나는지 검사합니다. 이 변경의 Linux·Windows 및 원격 CI는 사용자 요청에 따라 보류했습니다.
+종료 이벤트 연동 커밋 `078e3ec`은 cpp-network `66792b0`을 사용해 2026-11-21~22 로컬 macOS Debug·Release·ASan+UBSan·TSan에서 각각 **CTest 49개를 통과**했습니다. 2026-11-22 [원격 소켓 통합 CI](https://github.com/lemondory/mo-game-project/actions/runs/45032390514)도 macOS·Ubuntu·Windows Debug/Release와 Linux ASan·TSan의 8개 구성에서 각각 49개를 통과했습니다. 거절 ACK 검사는 종료 기한을 30초로 설정하고 5초 안에 ACK·쓰기 완료 집계·EOF·종료 통지를 확인해, 기한 만료를 기다리지 않고 완료 이벤트로 끝나는지 검사합니다. 현재 고정한 `6f4af48`은 같은 네트워크 코드에 원격 검증 문서만 추가한 커밋입니다.
 
 이 결과는 기능·오류 검사이며 실제 네트워크 성능이나 서비스 준비 상태의 검증은 아닙니다.
 
@@ -255,7 +255,7 @@ cmake --build --preset macos-release
 
 ### 소켓 세션 통합 빌드 (선택)
 
-현재 브랜치의 cpp-network 고정 커밋 `66792b0`은 로컬에만 있습니다. 사용자 요청으로 원격 푸시·PR·CI를 보류했습니다. 아래 원격 clone 절차는 의존성 게시를 재개한 뒤 사용하며, 현재 로컬 worktree에서는 다음과 같이 구성합니다.
+현재 브랜치의 cpp-network 고정 커밋 `6f4af48`은 원격 `feature/drain-close`에 게시돼 있습니다. 아래 원격 clone 절차로 준비하거나, 기존 로컬 worktree에서는 다음과 같이 구성합니다.
 
 ```sh
 # out/game-drain-events에서 실행. 기존 소켓 통합 작업 트리는 유지합니다.
@@ -297,13 +297,13 @@ ctest --test-dir out/socket-macos-debug --output-on-failure --no-tests=error
 | P4 | Unreal 샘플 완성: 예측·보정·재접속 UX와 클라이언트 지표 | 미착수 |
 | P5 | 서비스 준비: fuzz·soak·인증·배포·복구 runbook과 출시 게이트 | 미착수 |
 
-게임 입력을 연결하기 전에 공통 네트워크 작업을 다음 순서로 진행합니다. 원격 작업은 보류하며 큰 작업별 로컬 브랜치와 worktree를 유지합니다.
+게임 입력을 연결하기 전에 공통 네트워크 작업을 다음 순서로 진행합니다. 완료한 기능 브랜치는 원격 게시·플랫폼 CI까지 통과했으며, 큰 작업별 브랜치와 worktree를 유지합니다. main 병합은 별도 단계입니다.
 
 | 작업 | 저장소·브랜치 | 상태 |
 | --- | --- | --- |
-| 연결 수락·접속 | cpp-network / feature/accept-connect | 로컬 구현·검증 완료 |
-| 송신 완료·기한이 있는 종료 | cpp-network / feature/drain-close | 로컬 4개 구성 각 31개, 설치 소비자 2개 통과 |
-| 세션의 종료 이벤트 연결 | 게임 / feature/socket-drain-events | 로컬 4개 구성 각각 49개 검사 통과 |
+| 연결 수락·접속 | cpp-network / feature/accept-connect | 로컬 검증 및 원격 8개 구성 각각 21개 통과 |
+| 송신 완료·기한이 있는 종료 | cpp-network / feature/drain-close | 로컬 4개·원격 8개 구성 각각 31개, 일반 빌드의 설치 소비자 2개 통과 |
+| 세션의 종료 이벤트 연결 | 게임 / feature/socket-drain-events | 로컬 4개·원격 8개 구성 각각 49개 검사 통과 |
 | 다중 연결 관리 | 게임 / feature/network-host (예정) | 세션 등록·해제, 연결 수·총 대기량 제한, 서버 전체 종료 |
 | 다중 연결 검증 | 게임 / feature/network-load-validation (예정) | 느린 상대·접속 폭주·끊김·장시간 부하에서 상한·격리·정리 검증 |
 
